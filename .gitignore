@@ -44,6 +44,7 @@ logs/
 results/
 user_files/
 simulation_cache_folder/
+llm_cache_folder/
 
 # OS specific files
 # macOS
