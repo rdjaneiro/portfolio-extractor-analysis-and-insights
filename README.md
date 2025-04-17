@@ -1,6 +1,7 @@
-# Empower Portfolio WebArchive Extractor
+# Empower Portfolio Extractor, Analyzer and AI inisights
 
-A Streamlit web application that extracts portfolio holdings data from Empower retirement account webarchive files and converts them to both human-readable text and CSV format for further analysis.
+A AI powered web application that extracts portfolio holdings data from Empower accounts webarchive or mhtml files and converts them to both human-readable text and CSV format for AI analysis. AI calls will review the portfolio holdings and offer AI-powered review, insights and recomendations.
+
 
 ## Features
 
