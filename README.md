@@ -1,4 +1,4 @@
-# Empower Portfolio Extractor, Analyzer and AI inisights
+# Empower Portfolio Extractor, Analyzer and AI insights
 
 A AI powered web application that extracts portfolio holdings data from Empower accounts webarchive or mhtml files and converts them to both human-readable text and CSV format for AI analysis. AI calls will review the portfolio holdings and offer AI-powered review, insights and recomendations.
 

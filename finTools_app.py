@@ -596,41 +596,84 @@ def main():
         file_type = result.get("file_type", "unknown")
         file_type_display = "WebArchive" if file_type == 'webarchive' else "MHTML" if file_type == 'mhtml' else "File"
 
-        # --- LLM Portfolio Review Button --- (Move this section above Portfolio Holdings)
-        # Read data from CSV file for display
+        # --- Ensure df is loaded from CSV or holdings ---
         df = None
-        if result["csv_path"]:
+        if result.get("csv_path"):
             df = read_csv_to_dataframe(result["csv_path"])
-
-            # If needed, reorder columns to make sure Name comes before Ticker
-            if df is not None and 'Name' in df.columns and 'Ticker' in df.columns:
-                cols = df.columns.tolist()
-                name_index = cols.index('Name')
-                ticker_index = cols.index('Ticker')
-
-                if ticker_index < name_index:  # If Ticker appears before Name
-                    # Reorder the columns to put Name before Ticker
-                    cols.remove('Name')
-                    cols.insert(ticker_index, 'Name')
-                    df = df[cols]
-
-        if df is None:
-            # Fallback to the holdings data if CSV couldn't be read
+        if df is None and result.get("holdings"):
             df = pd.DataFrame(result["holdings"])
-            # Make sure Name column comes before Ticker if both exist
-            if 'Name' in df.columns and 'Ticker' in df.columns:
-                # Get all column names
-                cols = df.columns.tolist()
-                # Remove both columns
-                cols.remove('Name')
-                cols.remove('Ticker')
-                # Add them back in the desired order
-                cols.insert(0, 'Ticker')
-                cols.insert(0, 'Name')
-                # Reorder the dataframe
-                df = df[cols]
 
-        # --- LLM Portfolio Review Button (now above Portfolio Holdings) ---
+        # --- DOWNLOAD OPTIONS SECTION (moved to top) ---
+        st.header("Download Options")
+        col1, col2, col3 = st.columns(3)
+
+        # Provide CSV download
+        if result["csv_path"]:
+            with open(result["csv_path"], "r") as f:
+                csv_data = f.read()
+
+            with col1:
+                download_csv = st.download_button(
+                    label="Download CSV File",
+                    data=csv_data,
+                    file_name=os.path.basename(result["csv_path"]),
+                    mime="text/csv",
+                    key="download_csv"
+                )
+
+        # MorningStar CSV download or text file as fallback
+        if result["morningstar_path"]:
+            with open(result["morningstar_path"], "r") as f:
+                ms_data = f.read()
+
+            with col2:
+                download_ms = st.download_button(
+                    label="Download MorningStar CSV",
+                    data=ms_data,
+                    file_name=os.path.basename(result["morningstar_path"]),
+                    mime="text/csv",
+                    key="download_ms"
+                )
+        elif result["text_path"]:
+            with open(result["text_path"], "r", encoding="utf-8") as f:
+                text_data = f.read()
+
+            with col2:
+                download_text = st.download_button(
+                    label="Download Formatted Text File",
+                    data=text_data,
+                    file_name=os.path.basename(result["text_path"]),
+                    mime="text/plain",
+                    key="download_text"
+                )
+
+        # Text report download or raw data as fallback
+        if result["report_path"]:
+            with open(result["report_path"], "r", encoding="utf-8") as f:
+                report_data = f.read()
+
+            with col3:
+                download_report = st.download_button(
+                    label="Download Text Report",
+                    data=report_data,
+                    file_name=os.path.basename(result["report_path"]),
+                    mime="text/plain",
+                    key="download_report"
+                )
+        elif result["raw_data_path"]:
+            with open(result["raw_data_path"], "r", encoding="utf-8") as f:
+                raw_data = f.read()
+
+            with col3:
+                download_raw = st.download_button(
+                    label="Download Raw Data File",
+                    data=raw_data,
+                    file_name=os.path.basename(result["raw_data_path"]),
+                    mime="text/plain",
+                    key="download_raw"
+                )
+
+        # --- LLM Portfolio Review Button (now below download options) ---
         st.subheader("Portfolio Review by AI")
         stats = calculate_portfolio_statistics(df)
         if st.button("Ask AI for Portfolio Insights", key="llm_review_btn"):
@@ -655,79 +698,9 @@ def main():
                 st.write(llm_response)
 
         # Display portfolio holdings
-        if result["holdings"]:
+        if result["holdings"] and df is not None:
             st.header("Portfolio Holdings")
             st.dataframe(df, hide_index=True)
-
-            # Move download buttons here - right after displaying the holdings table
-            st.subheader("Download Options")
-            col1, col2, col3 = st.columns(3)
-
-            # Provide CSV download
-            if result["csv_path"]:
-                with open(result["csv_path"], "r") as f:
-                    csv_data = f.read()
-
-                with col1:
-                    download_csv = st.download_button(
-                        label="Download CSV File",
-                        data=csv_data,
-                        file_name=os.path.basename(result["csv_path"]),
-                        mime="text/csv",
-                        key="download_csv"
-                    )
-
-            # MorningStar CSV download or text file as fallback
-            if result["morningstar_path"]:
-                with open(result["morningstar_path"], "r") as f:
-                    ms_data = f.read()
-
-                with col2:
-                    download_ms = st.download_button(
-                        label="Download MorningStar CSV",
-                        data=ms_data,
-                        file_name=os.path.basename(result["morningstar_path"]),
-                        mime="text/csv",
-                        key="download_ms"
-                    )
-            elif result["text_path"]:
-                with open(result["text_path"], "r", encoding="utf-8") as f:
-                    text_data = f.read()
-
-                with col2:
-                    download_text = st.download_button(
-                        label="Download Formatted Text File",
-                        data=text_data,
-                        file_name=os.path.basename(result["text_path"]),
-                        mime="text/plain",
-                        key="download_text"
-                    )
-
-            # Text report download or raw data as fallback
-            if result["report_path"]:
-                with open(result["report_path"], "r", encoding="utf-8") as f:
-                    report_data = f.read()
-
-                with col3:
-                    download_report = st.download_button(
-                        label="Download Text Report",
-                        data=report_data,
-                        file_name=os.path.basename(result["report_path"]),
-                        mime="text/plain",
-                        key="download_report"
-                    )
-            elif result["raw_data_path"]:
-                with open(result["raw_data_path"], "r", encoding="utf-8") as f:
-                    raw_data = f.read()
-
-                with col3:
-                    download_raw = st.download_button(
-                        label="Download Raw Data File",
-                        data=raw_data,
-                        file_name=os.path.basename(result["raw_data_path"]),
-                        mime="text/plain",
-                        key="download_raw"
-                    )
 
             # Now continue with portfolio statistics section
             st.header("Portfolio Statistics")
@@ -956,7 +929,8 @@ def main():
                         y = lorenz_data['cumulative_pct'].values / 100
                         x = np.insert(x, 0, 0)
                         y = np.insert(y, 0, 0)
-                        B = np.trapz(y, x)
+                        # Use np.trapezoid instead of np.trapz to avoid DeprecationWarning
+                        B = np.trapezoid(y, x)
                         gini = 1 - 2 * B
 
                         st.metric(
