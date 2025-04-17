@@ -124,6 +124,12 @@ Or with Docker Compose:
 docker-compose down
 docker-compose up -d
 ```
+or
+```bash
+docker-compose down
+docker-compose build --no-cache
+docker-compose up -d
+```
 
 ## Environment Variables
 

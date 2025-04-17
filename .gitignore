@@ -27,6 +27,8 @@ user_files/
 *.env.test.local
 *.env.production.local
 
+my-config*.*
+
 # Data files
 *.db
 *.log
