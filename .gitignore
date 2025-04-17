@@ -31,6 +31,7 @@ user_files/
 *.db
 *.log
 *.csv
+.bash_history
 
 # Streamlit specific
 .streamlit/secrets.toml
