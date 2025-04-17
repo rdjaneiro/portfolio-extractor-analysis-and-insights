@@ -1,0 +1,63 @@
+# Python virtual environments
+venv/
+.env/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+
+# Empower Portfolio Extractor specific files
+# User-specific data directories
+user_files/
+# Raw web archive files
+*.webarchive
+# Raw extracted data
+*_rawdata.txt
+# Generated reports
+*_report.txt
+# Generated MorningStar files
+*_morningstar.csv
+
+# secrets files
+*.env
+*.env.local
+*.env.development.local
+*.env.test.local
+*.env.production.local
+
+# Data files
+*.db
+*.log
+*.csv
+
+# Streamlit specific
+.streamlit/secrets.toml
+
+# Project directories to ignore
+backup-old-files/
+archive/
+responses/
+logs/
+results/
+user_files/
+simulation_cache_folder/
+
+# OS specific files
+# macOS
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+# Temporary files
+*~
+
+# IDE specific files
+# VS Code
+.vscode/
+.devcontainer/
+# PyCharm
+.idea/
+# Jupyter Notebook
+.ipynb_checkpoints/

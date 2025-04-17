@@ -1,0 +1,9 @@
+# The [server] section tells Streamlit:
+# - To run in a non-GUI, headless mode (required for Docker).
+# - To allow LAN connections by binding to all interfaces (address = "0.0.0.0").
+# - To use port 8501 and disable CORS for easier cross-origin access.
+[server]
+headless = true
+enableCORS = false
+port = 8505
+address = "0.0.0.0"

@@ -1,0 +1,11 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8505:8505"
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    command: ["streamlit", "run", "finTools_app.py"]

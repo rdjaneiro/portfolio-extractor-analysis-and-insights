@@ -1,0 +1,12 @@
+numpy
+pandas
+streamlit
+BeautifulSoup4
+matplotlib
+xlsxwriter
+tabulate
+plotly
+dotenv
+openai
+anthropic
+diskcache
