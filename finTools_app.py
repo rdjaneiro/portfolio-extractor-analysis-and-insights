@@ -457,19 +457,55 @@ def calculate_portfolio_statistics(df):
     return stats
 
 def create_morningstar_csv(df, output_file_base):
-    """Create a MorningStar-compatible CSV with just Ticker and Shares columns"""
-    # Check if we have the needed columns
+    """Create a MorningStar-compatible CSV with proper format and column headers"""
+    # Check if we have the required columns
+    name_col = 'Name' if 'Name' in df.columns else None
     ticker_col = 'Ticker' if 'Ticker' in df.columns else ('Symbol' if 'Symbol' in df.columns else None)
     shares_col = 'Shares' if 'Shares' in df.columns else None
+    value_col = 'Value' if 'Value' in df.columns else None
 
     if not ticker_col or not shares_col:
         return None
 
-    # Create a new DataFrame with just Ticker and Shares
-    ms_df = pd.DataFrame({
-        'Ticker': df[ticker_col],
-        'Shares': df[shares_col]
-    })
+    # Prepare the data
+    ms_data = []
+    for idx, row in df.iterrows():
+        name = row.get(name_col, '') if name_col else ''
+        symbol = row[ticker_col]
+        shares = row[shares_col]
+
+        # Calculate price per share if we have value and shares
+        price = ''
+        if value_col and shares and float(shares) > 0:
+            try:
+                # Handle value formatting (remove $ and commas if present)
+                if isinstance(row[value_col], str):
+                    value_clean = row[value_col].replace('$', '').replace(',', '')
+                else:
+                    value_clean = str(row[value_col])
+
+                total_value = float(value_clean)
+                price = total_value / float(shares)
+                price = f"{price:.2f}"
+            except (ValueError, ZeroDivisionError):
+                price = ''
+
+        # Use CASH$ for cash positions if symbol indicates cash
+        if 'cash' in str(symbol).lower():
+            symbol = 'CASH$'
+
+        ms_data.append({
+            'Name': name,
+            'Symbol': symbol,
+            'Action': 'buy',  # Default to buy for existing holdings
+            'Shares': shares,
+            'Price': price,
+            'Commission': '0',  # Default to 0 commission
+            'Date': ''  # Leave date empty as we don't have transaction dates
+        })
+
+    # Create DataFrame with proper column order
+    ms_df = pd.DataFrame(ms_data, columns=['Name', 'Symbol', 'Action', 'Shares', 'Price', 'Commission', 'Date'])
 
     # Save to CSV in user-specific directory
     user_dir = ensure_user_files_dir()
@@ -673,34 +709,34 @@ def main():
                     key="download_raw"
                 )
 
-        # --- LLM Portfolio Review Button (now below download options) ---
-        st.subheader("Portfolio Review by AI")
-        stats = calculate_portfolio_statistics(df)
-        if st.button("Ask AI for Portfolio Insights", key="llm_review_btn"):
-            with st.spinner("AI is reviewing your portfolio..."):
-                llm_prompt = (
-                    "You are a financial portfolio expert. "
-                    "Review the following portfolio holdings and statistics. "
-                    "Provide a concise, actionable assessment of the portfolio's quality, diversification, risks, and suggest improvements. "
-                    "Here is the data:\n\n"
-                    f"Holdings (top 10):\n{df.head(10).to_string(index=False)}\n\n"
-                    f"Portfolio statistics:\n{stats}\n"
-                )
-                system_message = (
-                    "You are a helpful assistant that provides expert financial portfolio analysis. "
-                    "Be concise, actionable, and clear for a general audience."
-                )
-                llm_response = send_query_to_llm(
-                    query=llm_prompt,
-                    system_message=system_message
-                )
-                st.success("AI Portfolio Review:")
-                st.write(llm_response)
-
         # Display portfolio holdings
         if result["holdings"] and df is not None:
             st.header("Portfolio Holdings")
             st.dataframe(df, hide_index=True)
+
+            # --- LLM Portfolio Review Button (moved inside data validation) ---
+            st.subheader("Portfolio Review by AI")
+            stats = calculate_portfolio_statistics(df)
+            if st.button("Ask AI for Portfolio Insights", key="llm_review_btn"):
+                with st.spinner("AI is reviewing your portfolio..."):
+                    llm_prompt = (
+                        "You are a financial portfolio expert. "
+                        "Review the following portfolio holdings and statistics. "
+                        "Provide a concise, actionable assessment of the portfolio's quality, diversification, risks, and suggest improvements. "
+                        "Here is the data:\n\n"
+                        f"Holdings (top 10):\n{df.head(10).to_string(index=False)}\n\n"
+                        f"Portfolio statistics:\n{stats}\n"
+                    )
+                    system_message = (
+                        "You are a helpful assistant that provides expert financial portfolio analysis. "
+                        "Be concise, actionable, and clear for a general audience."
+                    )
+                    llm_response = send_query_to_llm(
+                        query=llm_prompt,
+                        system_message=system_message
+                    )
+                    st.success("AI Portfolio Review:")
+                    st.write(llm_response)
 
             # Now continue with portfolio statistics section
             st.header("Portfolio Statistics")
