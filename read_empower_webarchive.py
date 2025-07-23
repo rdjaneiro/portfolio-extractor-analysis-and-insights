@@ -457,18 +457,566 @@ def display_csv_as_table(csv_file, holdings_data=None):
     except Exception as e:
         print(f"Error displaying CSV data: {e}")
 
+def extract_net_worth_data(text_content):
+    """Extract net worth data from the text content using proper group structure"""
+    if not text_content:
+        return "Could not extract net worth data: No text content provided"
+
+    # Look for patterns that indicate this is net worth data
+    if "Net worth" not in text_content and "ALL ACCOUNTS" not in text_content:
+        return "Could not extract net worth data: No net worth indicators found"
+
+    accounts = []
+    lines = text_content.split('\n')
+
+    # Define the group structure and their expected patterns
+    groups = {
+        'Cash': 'Cash',
+        'Investment': 'Investment',
+        'Credit': 'Credit',
+        'Loan': 'Loan',
+        'Mortgage': 'Mortgage',
+        'Other Asset': 'Other Asset'
+    }
+
+    # Find the section that contains the structured account data (around line 8500+)
+    # Look for the pattern: Account\nType\nBalance\nCash
+    structured_section_start = -1
+    for i, line in enumerate(lines):
+        if (line.strip() == "Account" and
+            i + 1 < len(lines) and lines[i + 1].strip() == "Type" and
+            i + 2 < len(lines) and lines[i + 2].strip() == "Balance"):
+            structured_section_start = i + 3
+            break
+
+    if structured_section_start == -1:
+        return "Could not extract net worth data: Structured section not found"
+
+    # Process the structured section
+    current_group = None
+    current_group_total = None
+    i = structured_section_start
+
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Skip empty lines
+        if not line:
+            i += 1
+            continue
+
+        # Check if this line is a group header with total
+        if line in groups:
+            current_group = line
+            # Look for the group total on the next few lines
+            j = i + 1
+            while j < len(lines) and j < i + 5:
+                next_line = lines[j].strip()
+                if next_line.startswith('$') or next_line.startswith('-$'):
+                    current_group_total = next_line
+                    break
+                j += 1
+            i = j + 1
+            continue
+
+        # Check if this is a provider name (looking for known providers)
+        if any(provider in line for provider in [
+            'Apple Federal Credit Union', 'Charles Schwab', 'Fidelity', 'Morgan Stanley', 'M1 Finance',
+            'Manual Investment Holdings', 'Wells Fargo', 'Chase', 'American Express', 'Brex',
+            'E*TRADE', 'T-RowePrice Manual Holdings', 'Bluevine', 'Webull', 'Truist',
+            'MorganStanley', 'Manual', 'Cyber Connective Corporation'
+        ]):
+            provider = line
+
+            # Look ahead for account details
+            j = i + 1
+            account_name = None
+            account_type = None
+            balance = None
+            date = None
+
+            # Parse the next several lines for account details
+            while j < len(lines) and j < i + 15:
+                next_line = lines[j].strip()
+
+                if not next_line:
+                    j += 1
+                    continue
+
+                # Check for account name pattern (contains "Ending in" or looks like account name)
+                if ("Ending in" in next_line or "-" in next_line or
+                    any(keyword in next_line.lower() for keyword in [
+                        'checking', 'savings', 'brokerage', 'ira', '401', 'credit', 'card',
+                        'investment', 'trust', 'loan', 'mortgage', 'line', 'cash', 'apple',
+                        'advantage', 'afcu', 'cyber', 'schwab', 'rltq', 'sep', 'individual',
+                        'lei', 'ai', 'growth', 'crypto', 'aaa', 'consulting', 'platinum',
+                        'select', 'uma', 'hilton', 'marriott', 'bonvoy', 'business', 'preferred',
+                        'blue', 'equity', 'ready', 'advtge'
+                    ]) and not next_line.startswith('$') and
+                    next_line not in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
+                                    '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
+                                    'Line Of Credit']):
+                    account_name = next_line
+                    j += 1
+                    continue
+
+                # Check for account type (common types) - only if we don't already have one
+                if (not account_type and next_line in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
+                               '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
+                               'Line Of Credit']):
+                    account_type = next_line
+                    j += 1
+                    continue
+
+                # Check for balance (multiple formats: $123.45, -$123.45, -123.45)
+                if ((next_line.startswith('$') or next_line.startswith('-$') or next_line.startswith('-')) and
+                    any(c.isdigit() for c in next_line) and
+                    ('.' in next_line or next_line.replace('$', '').replace('-', '').replace(',', '').isdigit())):
+                    balance = next_line
+                    j += 1
+                    continue
+
+                # Check for date pattern (contains / and time info)
+                if ('/' in next_line and ('AM' in next_line or 'PM' in next_line or 'ago' in next_line)):
+                    date = next_line
+                    break
+
+                j += 1
+
+            # If we found account details, add to accounts
+            if account_name and balance:
+                # Don't use account type as account name if we have a better name
+                if account_name in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
+                                  '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
+                                  'Line Of Credit']:
+                    # This means we captured the type as the name, try to use provider info instead
+                    account_name = f"{provider} {account_name}" if provider != account_name else account_name
+
+                # Clean up balance for numeric conversion while preserving sign
+                # Handle various negative formats: -$123.45, -123.45
+                is_negative = balance.startswith('-$') or balance.startswith('-')
+                balance_clean = balance.replace('$', '').replace(',', '')
+
+                # Remove the negative sign for processing, we'll add it back if needed
+                if is_negative:
+                    balance_clean = balance_clean.lstrip('-')
+
+                # Determine category based on account type
+                account_type_lower = (account_type or 'Unknown').lower()
+                if account_type_lower in ['checking', 'savings']:
+                    category = 'Cash'
+                elif account_type_lower == 'investment':
+                    category = 'Taxed Investment'
+                elif '401k' in account_type_lower or 'ira' in account_type_lower:
+                    category = 'Pre-tax Investment'
+                elif account_type_lower in ['personal', 'line of credit']:
+                    category = 'Credit'
+                elif account_type_lower == 'mortgage':
+                    category = 'Mortgage'
+                elif account_type_lower == 'assets':
+                    category = 'Assets'
+                else:
+                    category = 'Other'
+
+                # Keep the full account name including "Ending in" details
+                # Don't modify account names that contain full descriptive information
+
+                accounts.append({
+                    'Account': account_name,
+                    'Type': account_type or 'Unknown',
+                    'Balance': f"-{balance_clean}" if is_negative else balance_clean,
+                    'Category': category,
+                    'Provider': provider,
+                    'Date': date or 'Unknown'
+                })
+
+            i = j
+        else:
+            i += 1
+
+    # Find the actual total net worth from the text (more accurate than summing individual accounts)
+    actual_total = None
+    total_pattern = r'\$([0-9,]+\.?\d*)'
+
+    # Look for the net worth total in the text - it appears near "ALL ACCOUNTS" section
+    lines_text = '\n'.join(lines)
+
+    # Search for patterns like "$10,359,346.21" that appear as the main total
+    import re
+    matches = re.findall(r'\$([0-9,]+\.[0-9]{2})', lines_text)
+
+    # Find the largest amount which is likely the total net worth
+    largest_amount = 0
+    for match in matches:
+        try:
+            amount = float(match.replace(',', ''))
+            if amount > largest_amount and amount > 1000000:  # Must be > 1M to be total net worth
+                largest_amount = amount
+                actual_total = amount
+        except:
+            continue
+
+    # Use actual total if found, otherwise calculate from accounts
+    if actual_total:
+        total_net_worth = actual_total
+    else:
+        total_net_worth = 0
+        for account in accounts:
+            try:
+                balance_val = float(account['Balance'].replace(',', ''))
+                total_net_worth += balance_val
+            except:
+                pass
+
+    # Add the total as a summary row
+    if total_net_worth != 0:
+        accounts.append({
+            'Account': 'TOTAL NET WORTH',
+            'Type': 'Total',
+            'Balance': f"{total_net_worth:.2f}",
+            'Category': 'Total',
+            'Provider': 'Summary',
+            'Date': 'Calculated'
+        })
+
+    # Second pass: Look for accounts in alternative format (provider on separate line)
+    # This catches accounts like Brex Card Account that appear later in the file
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Look for standalone provider names (exact match, case-sensitive)
+        if line in ['Brex', 'Chase', 'American Express', 'Wells Fargo', 'Fidelity', 'Morgan Stanley', 'Bluevine', 'Webull', 'MorganStanley-LAL', 'Apple Federal Credit Union']:
+            provider = line
+
+            # Look ahead for account details in the next few lines
+            j = i + 1
+            account_name = None
+            account_type = None
+            balance = None
+            date = None
+
+            while j < len(lines) and j < i + 15:  # Increased range to 15 lines
+                current_line = lines[j]
+                next_line = current_line.strip()
+
+                if not next_line:
+                    j += 1
+                    continue
+
+                # Look for indented account name (has significant leading spaces)
+                if (len(current_line) > len(next_line) and len(current_line) >= 14 and
+                    current_line.startswith('              ') and next_line and
+                    not next_line.startswith('$') and not next_line.startswith('-$') and
+                    next_line not in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
+                                    '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets']):
+                    account_name = next_line
+                    j += 1
+                    continue
+
+                # Look for account type
+                if (not account_type and next_line in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
+                               '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets']):
+                    account_type = next_line
+                    j += 1
+                    continue
+
+                # Look for balance (including negative balances)
+                if ((next_line.startswith('$') or next_line.startswith('-$') or next_line.startswith('-')) and
+                    any(c.isdigit() for c in next_line) and
+                    ('.' in next_line or next_line.replace('$', '').replace('-', '').replace(',', '').isdigit())):
+                    balance = next_line
+                    j += 1
+                    continue
+
+                # Look for date/time
+                if ('/' in next_line and ('AM' in next_line or 'PM' in next_line)):
+                    date = next_line
+                    break
+
+                j += 1
+
+            # If we found an account, add it
+            if account_name and balance:
+                # Clean up balance for numeric conversion while preserving sign
+                is_negative = balance.startswith('-$') or balance.startswith('-')
+                balance_clean = balance.replace('$', '').replace(',', '')
+
+                if is_negative:
+                    balance_clean = balance_clean.lstrip('-')
+
+                # Determine category based on account type
+                account_type_lower = (account_type or 'Unknown').lower()
+                if account_type_lower in ['checking', 'savings']:
+                    category = 'Cash'
+                elif account_type_lower == 'investment':
+                    category = 'Taxed Investment'
+                elif '401k' in account_type_lower or 'ira' in account_type_lower:
+                    category = 'Pre-tax Investment'
+                elif account_type_lower in ['personal', 'line of credit']:
+                    category = 'Credit'
+                elif account_type_lower == 'mortgage':
+                    category = 'Mortgage'
+                elif account_type_lower == 'assets':
+                    category = 'Assets'
+                else:
+                    category = 'Other'
+
+                accounts.append({
+                    'Account': account_name,
+                    'Type': account_type or 'Unknown',
+                    'Balance': f"-{balance_clean}" if is_negative else balance_clean,
+                    'Category': category,
+                    'Provider': provider,
+                    'Date': date or 'Unknown'
+                })
+
+            i = j
+        else:
+            i += 1
+
+    # Third pass: Look for accounts where account name comes first, then indented provider
+    # This catches accounts like "Manual Loan" followed by indented "MorganStanley-LAL"
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Look for potential account names that might be followed by indented provider
+        # Be more specific to avoid section headers like "Loan", "Mortgage", etc.
+        if (line and not line.startswith('$') and not line.startswith('-$') and
+            line not in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
+                        '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
+                        'Loan', 'Credit'] and  # Exclude section headers
+            len(line) > 4 and  # Must be longer than simple section headers
+            any(keyword in line.lower() for keyword in ['manual loan', 'mortgage loan', 'credit card', 'line of credit'])):
+
+            potential_account_name = line
+
+            # Look ahead for indented provider and account details
+            j = i + 1
+            provider = None
+            account_type = None
+            balance = None
+            date = None
+
+            while j < len(lines) and j < i + 20:
+                current_line = lines[j]
+                next_line = current_line.strip()
+
+                if not next_line:
+                    j += 1
+                    continue
+
+                # Look for indented provider (starts with significant spaces and contains known provider patterns)
+                if (len(current_line) > len(next_line) and len(current_line) >= 14 and
+                    current_line.startswith('              ') and
+                    any(prov in next_line for prov in ['MorganStanley', 'Apple Federal', 'Wells Fargo', 'Chase', 'Fidelity'])):
+                    provider = next_line
+                    j += 1
+                    continue
+
+                # Look for account type
+                if (not account_type and next_line in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
+                               '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets']):
+                    account_type = next_line
+                    j += 1
+                    continue
+
+                # Look for balance
+                if ((next_line.startswith('$') or next_line.startswith('-$') or next_line.startswith('-')) and
+                    any(c.isdigit() for c in next_line) and
+                    ('.' in next_line or next_line.replace('$', '').replace('-', '').replace(',', '').isdigit())):
+                    balance = next_line
+                    j += 1
+                    continue
+
+                # Look for date/time
+                if ('/' in next_line or ('AM' in next_line or 'PM' in next_line)):
+                    date = next_line
+                    break
+
+                j += 1
+
+            # If we found provider and balance, add the account
+            if provider and balance:
+                # Clean up balance for numeric conversion while preserving sign
+                is_negative = balance.startswith('-$') or balance.startswith('-')
+                balance_clean = balance.replace('$', '').replace(',', '')
+
+                if is_negative:
+                    balance_clean = balance_clean.lstrip('-')
+
+                # Determine category based on account type
+                account_type_lower = (account_type or 'Unknown').lower()
+                if account_type_lower in ['checking', 'savings']:
+                    category = 'Cash'
+                elif account_type_lower == 'investment':
+                    category = 'Taxed Investment'
+                elif '401k' in account_type_lower or 'ira' in account_type_lower:
+                    category = 'Pre-tax Investment'
+                elif account_type_lower in ['personal', 'line of credit']:
+                    category = 'Credit'
+                elif account_type_lower == 'mortgage':
+                    category = 'Mortgage'
+                elif account_type_lower == 'assets':
+                    category = 'Assets'
+                else:
+                    category = 'Other'
+
+                accounts.append({
+                    'Account': potential_account_name,
+                    'Type': account_type or 'Unknown',
+                    'Balance': f"-{balance_clean}" if is_negative else balance_clean,
+                    'Category': category,
+                    'Provider': provider,
+                    'Date': date or 'Unknown'
+                })
+
+            i = j
+        else:
+            i += 1
+
+    # Find the actual total net worth from the text (more accurate than summing individual accounts)
+    actual_total = None
+    total_pattern = r'\$([0-9,]+\.?\d*)'
+
+    # Look for the net worth total in the text - it appears near "ALL ACCOUNTS" section
+    lines_text = '\n'.join(lines)
+
+    # Search for patterns like "$10,359,346.21" that appear as the main total
+    import re
+    matches = re.findall(r'\$([0-9,]+\.[0-9]{2})', lines_text)
+
+    # Find the largest amount which is likely the total net worth
+    largest_amount = 0
+    for match in matches:
+        try:
+            amount = float(match.replace(',', ''))
+            if amount > largest_amount and amount > 1000000:  # Must be > 1M to be total net worth
+                largest_amount = amount
+                actual_total = amount
+        except:
+            continue
+
+    # Use actual total if found, otherwise calculate from accounts
+    if actual_total:
+        total_net_worth = actual_total
+    else:
+        total_net_worth = 0
+        for account in accounts:
+            try:
+                balance_val = float(account['Balance'].replace(',', ''))
+                total_net_worth += balance_val
+            except:
+                pass
+
+    # Add the total as a summary row
+    if total_net_worth != 0:
+        accounts.append({
+            'Account': 'TOTAL NET WORTH',
+            'Type': 'Total',
+            'Balance': f"{total_net_worth:.2f}",
+            'Category': 'Total',
+            'Provider': 'Summary',
+            'Date': 'Calculated'
+        })
+
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_accounts = []
+    for account in accounts:
+        key = (account['Account'], account['Balance'], account['Provider'])
+        if key not in seen:
+            seen.add(key)
+            unique_accounts.append(account)
+
+    if not unique_accounts:
+        return "Could not extract net worth data: No account information found in the expected format"
+
+    return unique_accounts
+
+def save_networth_to_csv(networth_data, output_file):
+    """Save net worth data to CSV file"""
+    if not networth_data or isinstance(networth_data, str):
+        return False
+
+    try:
+        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+            if networth_data:
+                fieldnames = ['Account', 'Type', 'Balance', 'Category', 'Provider', 'Date']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+
+                for account in networth_data:
+                    writer.writerow(account)
+
+                return True
+    except Exception as e:
+        print(f"Error saving net worth to CSV: {e}")
+        return False
+
+def format_networth_as_text(networth_data):
+    """Format net worth data as human-readable text"""
+    if not networth_data or isinstance(networth_data, str):
+        return "No net worth data available."
+
+    # Build formatted text
+    lines = []
+    lines.append("NET WORTH SUMMARY")
+    lines.append("=" * 50)
+    lines.append("")
+
+    # Group by category
+    categories = {}
+    total_found = False
+
+    for account in networth_data:
+        category = account.get('Category', 'Unknown')
+        if category == 'Total':
+            total_found = True
+            continue
+        if category not in categories:
+            categories[category] = []
+        categories[category].append(account)
+
+    # Display by category
+    for category, accounts in categories.items():
+        lines.append(f"{category.upper()}:")
+        lines.append("-" * (len(category) + 1))
+
+        for account in accounts:
+            lines.append(f"  Account:      {account.get('Account', 'N/A')}")
+            lines.append(f"  Type:         {account.get('Type', 'N/A')}")
+            lines.append(f"  Balance:      ${account.get('Balance', 'N/A')}")
+            lines.append("")
+        lines.append("")
+
+    # Add total if found
+    for account in networth_data:
+        if account.get('Category') == 'Total':
+            lines.append("TOTAL NET WORTH:")
+            lines.append("=" * 16)
+            lines.append(f"${account.get('Balance', 'N/A')}")
+            break
+
+    if not total_found:
+        lines.append(f"Total Accounts: {len(networth_data)}")
+
+    return "\n".join(lines)
+
 def main():
     # Set up argument parser
     parser = argparse.ArgumentParser(description="Extract text from WebArchive files")
     parser.add_argument("input_file", nargs='?', help="Path to the .webarchive file")
     parser.add_argument("-o", "--output", help="Output file base name (without extension)")
     parser.add_argument("--portfolio", action="store_true", help="Extract portfolio holdings information only")
+    parser.add_argument("--net-worth", action="store_true", help="Extract net worth information only")
     parser.add_argument("--csv", action="store_true", help="Save portfolio holdings as CSV file")
     parser.add_argument("--full-text", action="store_true", help="Extract full text content (default is portfolio+csv)")
     args = parser.parse_args()
 
     # Set defaults if no specific options provided
-    if not (args.portfolio or args.csv or args.full_text):
+    if not (args.portfolio or args.net_worth or args.csv or args.full_text):
         # Default behavior: extract portfolio and save as CSV
         args.portfolio = True
         args.csv = True
@@ -496,6 +1044,28 @@ def main():
     extracted_text = extract_webarchive_text(args.input_file)
 
     if extracted_text and not extracted_text.startswith("Error"):
+        # Process for net worth if requested
+        if args.net_worth:
+            networth_data = extract_net_worth_data(extracted_text)
+            if isinstance(networth_data, str) and networth_data.startswith("Could not"):
+                print(networth_data)
+                sys.exit(1)
+
+            # Save as CSV if requested
+            if args.csv:
+                if save_networth_to_csv(networth_data, output_csv):
+                    print(f"Net worth data saved as CSV to '{output_csv}'")
+                    # Display the CSV contents as a table
+                    print("\nNet Worth Table:")
+                    display_csv_as_table(output_csv, networth_data)
+
+            # Format net worth as text for text output
+            formatted_text = format_networth_as_text(networth_data)
+            with open(output_txt, "w", encoding="utf-8") as file:
+                file.write(formatted_text)
+            print(f"Net worth text saved to '{output_txt}'")
+            return
+
         # Process for portfolio holdings if requested
         if args.portfolio or args.csv:
             holdings_data = extract_portfolio_holdings(extracted_text)

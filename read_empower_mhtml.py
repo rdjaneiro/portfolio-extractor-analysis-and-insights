@@ -486,6 +486,264 @@ def display_csv_as_table(csv_file, holdings_data=None):
     except Exception as e:
         print(f"Error displaying CSV data: {e}")
 
+def extract_net_worth_data(text_content):
+    """Extract net worth data from the text content"""
+    if not text_content:
+        return "Could not extract net worth data: No text content provided"
+
+    # Look for patterns that indicate this is net worth data
+    if "Net worth" not in text_content and "ALL ACCOUNTS" not in text_content:
+        return "Could not extract net worth data: No net worth indicators found"
+
+    accounts = []
+    lines = text_content.split('\n')
+
+    # Track provider and account info
+    current_provider = None
+    current_account = None
+
+    # First, let's find the grand total
+    grand_total = None
+    for line in lines:
+        line = line.strip()
+        # Look for the total pattern like "$10,382,719.24"
+        if line.startswith('$') and ',' in line and len(line) > 8:
+            # Check if this might be the grand total (large amount)
+            try:
+                amount_str = line.replace('$', '').replace(',', '')
+                amount = float(amount_str)
+                if amount > 1000000:  # Assume grand total is over 1M
+                    grand_total = amount_str
+            except:
+                pass
+
+    # Now extract individual accounts
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+
+        # Look for account names with "Ending in" pattern
+        if "Ending in" in line:
+            current_account = line
+            current_provider = None
+
+            # Look ahead for provider and balance
+            j = i + 1
+            found_balance = False
+
+            while j < len(lines) and j < i + 20:  # Look ahead up to 20 lines
+                next_line = lines[j].strip()
+
+                # Skip empty lines and common non-data patterns
+                if not next_line or next_line in ['hrs ago', 'ago', 'Manual entry']:
+                    j += 1
+                    continue
+
+                # Check if this is a provider name (common providers)
+                if any(provider in next_line for provider in [
+                    'Charles Schwab', 'Fidelity', 'Morgan Stanley', 'M1 Finance',
+                    'Manual Investment Holdings', 'Apple Federal Credit Union',
+                    'Wells Fargo', 'Chase', 'American Express', 'Brex',
+                    'E*TRADE', 'T-RowePrice Manual Holdings', 'Bluevine',
+                    'Webull'
+                ]):
+                    current_provider = next_line
+                    j += 1
+                    continue
+
+                # Check if this is a balance (starts with $ and has numbers)
+                if next_line.startswith('$') and any(c.isdigit() for c in next_line):
+                    try:
+                        balance_str = next_line.replace('$', '').replace(',', '')
+                        balance_float = float(balance_str)
+
+                        # Extract account name (remove "Ending in" part)
+                        account_name = current_account.split(' - Ending in')[0].strip()
+
+                        # Clean up account name further
+                        if '(' in account_name and ')' in account_name:
+                            # Remove empty parentheses like "Account ( )"
+                            account_name = account_name.replace('( )', '').strip()
+
+                        # Determine account type from name patterns
+                        account_type = 'Unknown'
+                        category = 'Unknown'
+
+                        account_lower = account_name.lower()
+                        if any(term in account_lower for term in ['401k', '401(k)']):
+                            account_type = '401k Traditional'
+                            category = 'Investment'
+                        elif 'ira' in account_lower:
+                            account_type = 'IRA Traditional'
+                            category = 'Investment'
+                        elif 'sep' in account_lower:
+                            account_type = 'IRA SEP'
+                            category = 'Investment'
+                        elif any(term in account_lower for term in ['savings', 'health']):
+                            account_type = 'Savings'
+                            category = 'Cash' if 'health' not in account_lower else 'Investment'
+                        elif any(term in account_lower for term in ['checking', 'chk']):
+                            account_type = 'Checking'
+                            category = 'Cash'
+                        elif any(term in account_lower for term in ['investment', 'brokerage', 'stock', 'crypto', 'growth']):
+                            account_type = 'Investment'
+                            category = 'Investment'
+                        elif any(term in account_lower for term in ['credit', 'card']):
+                            account_type = 'Personal'
+                            category = 'Credit'
+                        elif any(term in account_lower for term in ['loan', 'mortgage']):
+                            account_type = 'Loan'
+                            category = 'Loan'
+                        else:
+                            # Try to determine from provider
+                            if current_provider:
+                                if 'Fidelity' in current_provider or 'Morgan Stanley' in current_provider or 'Charles Schwab' in current_provider:
+                                    account_type = 'Investment'
+                                    category = 'Investment'
+                                else:
+                                    account_type = 'Checking'
+                                    category = 'Cash'
+
+                        accounts.append({
+                            'Account': account_name,
+                            'Type': account_type,
+                            'Balance': balance_str,
+                            'Category': category,
+                            'Provider': current_provider or 'Unknown'
+                        })
+
+                        found_balance = True
+                        break
+
+                    except ValueError:
+                        pass
+
+                j += 1
+
+            i = j if found_balance else i + 1
+
+        # Also look for manual entries or special patterns
+        elif any(term in line for term in ['Manual Investment Holdings', 'Manual entry']):
+            # Look for associated balance
+            j = i + 1
+            while j < len(lines) and j < i + 10:
+                next_line = lines[j].strip()
+                if next_line.startswith('$') and any(c.isdigit() for c in next_line):
+                    try:
+                        balance_str = next_line.replace('$', '').replace(',', '')
+                        balance_float = float(balance_str)
+
+                        accounts.append({
+                            'Account': 'Manual Investment Holdings',
+                            'Type': 'Investment',
+                            'Balance': balance_str,
+                            'Category': 'Investment',
+                            'Provider': 'Manual'
+                        })
+                        break
+                    except ValueError:
+                        pass
+                j += 1
+            i = j
+        else:
+            i += 1
+
+    # Add grand total if found
+    if grand_total:
+        accounts.append({
+            'Account': 'TOTAL NET WORTH',
+            'Type': 'Total',
+            'Balance': grand_total,
+            'Category': 'Total',
+            'Provider': 'Summary'
+        })
+
+    # Remove duplicates (same account name and balance)
+    seen = set()
+    unique_accounts = []
+    for account in accounts:
+        key = (account['Account'], account['Balance'])
+        if key not in seen:
+            seen.add(key)
+            unique_accounts.append(account)
+
+    if not unique_accounts:
+        return "Could not extract net worth data: No account information found in the expected format"
+
+    return unique_accounts
+
+def save_networth_to_csv(networth_data, output_file):
+    """Save net worth data to CSV file"""
+    if not networth_data or isinstance(networth_data, str):
+        return False
+
+    try:
+        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+            if networth_data:
+                fieldnames = ['Account', 'Type', 'Balance', 'Category', 'Provider', 'Date']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+
+                for account in networth_data:
+                    writer.writerow(account)
+
+                return True
+    except Exception as e:
+        print(f"Error saving net worth to CSV: {e}")
+        return False
+
+def format_networth_as_text(networth_data):
+    """Format net worth data as human-readable text"""
+    if not networth_data or isinstance(networth_data, str):
+        return "No net worth data available."
+
+    # Build formatted text
+    lines = []
+    lines.append("NET WORTH SUMMARY")
+    lines.append("=" * 50)
+    lines.append("")
+
+    # Group by category
+    categories = {}
+    total_found = False
+
+    for account in networth_data:
+        category = account.get('Category', 'Unknown')
+        if category == 'Total':
+            total_found = True
+            continue
+        if category not in categories:
+            categories[category] = []
+        categories[category].append(account)
+
+    # Display by category
+    for category, accounts in categories.items():
+        lines.append(f"{category.upper()}:")
+        lines.append("-" * (len(category) + 1))
+
+        for account in accounts:
+            lines.append(f"  Account:      {account.get('Account', 'N/A')}")
+            lines.append(f"  Type:         {account.get('Type', 'N/A')}")
+            lines.append(f"  Balance:      ${account.get('Balance', 'N/A')}")
+            lines.append("")
+        lines.append("")
+
+    # Add total if found
+    for account in networth_data:
+        if account.get('Category') == 'Total':
+            lines.append("TOTAL NET WORTH:")
+            lines.append("=" * 16)
+            lines.append(f"${account.get('Balance', 'N/A')}")
+            break
+
+    if not total_found:
+        lines.append(f"Total Accounts: {len(networth_data)}")
+
+    return "\n".join(lines)
+
 def main():
     # Set up argument parser
     parser = argparse.ArgumentParser(description="Extract data from MHTML files")
