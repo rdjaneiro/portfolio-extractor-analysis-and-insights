@@ -84,12 +84,14 @@ from read_empower_webarchive import (
     format_networth_as_text as format_networth_as_text_wa
 )
 
-from read_empower_mhtml import (
+from read_empower_mhtml_improved import (
     extract_mhtml_text as extract_mhtml_text_mht,
+    extract_net_worth_data as extract_net_worth_data_mht
+)
+from read_empower_mhtml import (
     extract_portfolio_holdings as extract_portfolio_holdings_mht,
     save_holdings_to_csv as save_holdings_to_csv_mht,
     format_holdings_as_text as format_holdings_as_text_mht,
-    extract_net_worth_data as extract_net_worth_data_mht,
     save_networth_to_csv as save_networth_to_csv_mht,
     format_networth_as_text as format_networth_as_text_mht
 )
