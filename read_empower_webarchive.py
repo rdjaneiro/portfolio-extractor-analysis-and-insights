@@ -463,7 +463,7 @@ def extract_net_worth_data(text_content):
         return "Could not extract net worth data: No text content provided"
 
     # Look for patterns that indicate this is net worth data
-    if "Net worth" not in text_content and "ALL ACCOUNTS" not in text_content:
+    if "Net worth" not in text_content and "Net Worth" not in text_content and "ALL ACCOUNTS" not in text_content:
         return "Could not extract net worth data: No net worth indicators found"
 
     accounts = []
@@ -523,7 +523,7 @@ def extract_net_worth_data(text_content):
         if any(provider in line for provider in [
             'Apple Federal Credit Union', 'Charles Schwab', 'Fidelity', 'Morgan Stanley', 'M1 Finance',
             'Manual Investment Holdings', 'Wells Fargo', 'Chase', 'American Express', 'Brex',
-            'E*TRADE', 'T-RowePrice Manual Holdings', 'Bluevine', 'Webull', 'Truist',
+            'E*TRADE', 'T-RowePrice Manual Holdings', 'Bluevine', 'Webull', 'Coinbase', 'Truist',
             'MorganStanley', 'Manual', 'Cyber Connective Corporation'
         ]):
             provider = line
@@ -544,7 +544,9 @@ def extract_net_worth_data(text_content):
                     continue
 
                 # Check for account name pattern (contains "Ending in" or looks like account name)
-                if ("Ending in" in next_line or "-" in next_line or
+                # Exclude lines that start with currency symbols to avoid capturing balances as account names
+                if (not account_name and
+                    ("Ending in" in next_line or "-" in next_line or
                     any(keyword in next_line.lower() for keyword in [
                         'checking', 'savings', 'brokerage', 'ira', '401', 'credit', 'card',
                         'investment', 'trust', 'loan', 'mortgage', 'line', 'cash', 'apple',
@@ -552,10 +554,10 @@ def extract_net_worth_data(text_content):
                         'lei', 'ai', 'growth', 'crypto', 'aaa', 'consulting', 'platinum',
                         'select', 'uma', 'hilton', 'marriott', 'bonvoy', 'business', 'preferred',
                         'blue', 'equity', 'ready', 'advtge'
-                    ]) and not next_line.startswith('$') and
+                    ])) and not next_line.startswith('$') and not next_line.startswith('-$') and
                     next_line not in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
                                     '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
-                                    'Line Of Credit']):
+                                    'Line Of Credit', 'Cryptocurrency']):
                     account_name = next_line
                     j += 1
                     continue
@@ -563,7 +565,7 @@ def extract_net_worth_data(text_content):
                 # Check for account type (common types) - only if we don't already have one
                 if (not account_type and next_line in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
                                '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
-                               'Line Of Credit']):
+                               'Line Of Credit', 'Cryptocurrency']):
                     account_type = next_line
                     j += 1
                     continue
@@ -588,7 +590,7 @@ def extract_net_worth_data(text_content):
                 # Don't use account type as account name if we have a better name
                 if account_name in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
                                   '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
-                                  'Line Of Credit']:
+                                  'Line Of Credit', 'Cryptocurrency']:
                     # This means we captured the type as the name, try to use provider info instead
                     account_name = f"{provider} {account_name}" if provider != account_name else account_name
 
@@ -601,25 +603,45 @@ def extract_net_worth_data(text_content):
                 if is_negative:
                     balance_clean = balance_clean.lstrip('-')
 
-                # Determine category based on account type
+                # Determine category based on account type and current group
                 account_type_lower = (account_type or 'Unknown').lower()
-                if account_type_lower in ['checking', 'savings']:
+
+                # First check if we're in a specific group context
+                if current_group == 'Other Asset':
+                    category = 'Other'
+                elif account_type_lower in ['checking', 'savings']:
                     category = 'Cash'
                 elif account_type_lower == 'investment':
-                    category = 'Taxed Investment'
+                    category = 'Investment Brokerage'
+                elif account_type_lower == 'cryptocurrency':
+                    category = 'Investment Brokerage'  # Treat crypto as investment brokerage
                 elif '401k' in account_type_lower or 'ira' in account_type_lower:
-                    category = 'Pre-tax Investment'
-                elif account_type_lower in ['personal', 'line of credit']:
+                    category = 'Investment Retirement'
+                elif account_type_lower == 'personal':
                     category = 'Credit'
+                elif account_type_lower == 'line of credit':
+                    category = 'Loan'
                 elif account_type_lower == 'mortgage':
                     category = 'Mortgage'
-                elif account_type_lower == 'assets':
-                    category = 'Assets'
-                else:
+                elif account_type_lower in ['assets', 'property']:
                     category = 'Other'
+                else:
+                    # Check if account name suggests it's a property/real estate asset
+                    account_name_lower = (account_name or '').lower()
+                    if any(keyword in account_name_lower for keyword in ['home', 'house', 'property', 'real estate', 'land', 'zestimate']):
+                        category = 'Other'
+                    else:
+                        category = 'Other'
 
                 # Keep the full account name including "Ending in" details
                 # Don't modify account names that contain full descriptive information
+
+                # Fix account names that look like dates/times by using provider instead
+                import re
+                if (account_name and provider and
+                    (re.match(r'^\d{1,2}/\d{1,2}/\d{4}', account_name) or  # Date pattern like 2/15/2022
+                     re.match(r'^\d{1,2}:\d{2}[AP]M$', account_name))):    # Time pattern like 2:43PM
+                    account_name = provider
 
                 accounts.append({
                     'Account': account_name,
@@ -633,6 +655,83 @@ def extract_net_worth_data(text_content):
             i = j
         else:
             i += 1
+
+    # Special handling for "Other Asset" section which has a different format
+    # Look for the "Other Asset" header and parse the property details that follow
+    other_asset_line = -1
+    for i, line in enumerate(lines):
+        if line.strip() == "Other Asset":
+            other_asset_line = i
+            break
+
+    if other_asset_line != -1:
+        # Parse the Other Asset section for property details
+        # The format is: "Other Asset" -> total amount -> property details
+        i = other_asset_line + 1
+        section_end = min(len(lines), other_asset_line + 500)  # Search reasonable range
+
+        current_property = {}
+        looking_for_amount = False
+        looking_for_address = False
+
+        while i < section_end:
+            line = lines[i].strip()
+
+            # Skip empty lines
+            if not line:
+                i += 1
+                continue
+
+            # Look for property type indicators
+            if line.startswith('Home') or 'Zestimate' in line:
+                if current_property:
+                    # Save previous property if we have enough data
+                    if 'amount' in current_property and 'name' in current_property:
+                        accounts.append({
+                            'Account': current_property['name'],
+                            'Type': 'Property',
+                            'Balance': current_property['amount'],
+                            'Category': 'Other',
+                            'Provider': 'Empower Manual',
+                            'Date': current_property.get('date', 'Unknown')
+                        })
+
+                # Start new property
+                current_property = {'name': line, 'type': 'Property'}
+                looking_for_amount = True
+                looking_for_address = False
+
+            # Look for dollar amounts (property values)
+            elif looking_for_amount and line.startswith('$') and ',' in line and '.' in line:
+                current_property['amount'] = line.replace('$', '').replace(',', '')
+                looking_for_amount = False
+                looking_for_address = True
+
+            # Look for property address (specific street address pattern)
+            elif looking_for_address and any(word in line for word in ['Ct', 'St', 'Ave', 'Dr', 'Ln', 'Rd', 'Way']) and any(c.isdigit() for c in line):
+                current_property['name'] = f"{current_property.get('name', '')} - {line}".strip(' -')
+                looking_for_address = False
+
+            # Look for dates
+            elif '/' in line and ('2024' in line or '2025' in line):
+                current_property['date'] = line
+
+            # Stop if we hit the structured section or another major section
+            elif line in ['Account', 'Type', 'Balance'] or (line in ['Cash', 'Investment', 'Credit', 'Loan', 'Mortgage']):
+                break
+
+            i += 1
+
+        # Save the last property if we have data
+        if current_property and 'amount' in current_property and 'name' in current_property:
+            accounts.append({
+                'Account': current_property['name'],
+                'Type': 'Property',
+                'Balance': current_property['amount'],
+                'Category': 'Other',
+                'Provider': 'Empower Manual',
+                'Date': current_property.get('date', 'Unknown')
+            })
 
     # Find the actual total net worth from the text (more accurate than summing individual accounts)
     actual_total = None
@@ -686,7 +785,7 @@ def extract_net_worth_data(text_content):
         line = lines[i].strip()
 
         # Look for standalone provider names (exact match, case-sensitive)
-        if line in ['Brex', 'Chase', 'American Express', 'Wells Fargo', 'Fidelity', 'Morgan Stanley', 'Bluevine', 'Webull', 'MorganStanley-LAL', 'Apple Federal Credit Union']:
+        if line in ['Brex', 'Chase', 'American Express', 'Wells Fargo', 'Fidelity', 'Morgan Stanley', 'Bluevine', 'Webull', 'Coinbase', 'Apple Federal Credit Union']:
             provider = line
 
             # Look ahead for account details in the next few lines
@@ -709,14 +808,16 @@ def extract_net_worth_data(text_content):
                     current_line.startswith('              ') and next_line and
                     not next_line.startswith('$') and not next_line.startswith('-$') and
                     next_line not in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
-                                    '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets']):
+                                    '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
+                                    'Cryptocurrency']):
                     account_name = next_line
                     j += 1
                     continue
 
                 # Look for account type
                 if (not account_type and next_line in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
-                               '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets']):
+                               '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
+                               'Cryptocurrency']):
                     account_type = next_line
                     j += 1
                     continue
@@ -750,15 +851,19 @@ def extract_net_worth_data(text_content):
                 if account_type_lower in ['checking', 'savings']:
                     category = 'Cash'
                 elif account_type_lower == 'investment':
-                    category = 'Taxed Investment'
+                    category = 'Investment Brokerage'
+                elif account_type_lower == 'cryptocurrency':
+                    category = 'Investment Brokerage'  # Treat crypto as investment brokerage
                 elif '401k' in account_type_lower or 'ira' in account_type_lower:
-                    category = 'Pre-tax Investment'
-                elif account_type_lower in ['personal', 'line of credit']:
+                    category = 'Investment Retirement'
+                elif account_type_lower == 'personal':
                     category = 'Credit'
+                elif account_type_lower == 'line of credit':
+                    category = 'Loan'
                 elif account_type_lower == 'mortgage':
                     category = 'Mortgage'
-                elif account_type_lower == 'assets':
-                    category = 'Assets'
+                elif account_type_lower in ['assets', 'property']:
+                    category = 'Other'
                 else:
                     category = 'Other'
 
@@ -777,18 +882,27 @@ def extract_net_worth_data(text_content):
 
     # Third pass: Look for accounts where account name comes first, then indented provider
     # This catches accounts like "Manual Loan" followed by indented "MorganStanley-LAL"
+    # and "Webull Investment Holdings" followed by indented "Webull"
     i = 0
     while i < len(lines):
         line = lines[i].strip()
 
         # Look for potential account names that might be followed by indented provider
         # Be more specific to avoid section headers like "Loan", "Mortgage", etc.
+        # Also exclude date/time patterns
+        import re
+        is_date_time = (re.match(r'^\d{1,2}/\d{1,2}/\d{4}', line) or  # Date pattern like 2/15/2022
+                       re.match(r'^\d{1,2}:\d{2}[AP]M$', line))      # Time pattern like 2:43PM
+
         if (line and not line.startswith('$') and not line.startswith('-$') and
             line not in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
                         '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
-                        'Loan', 'Credit'] and  # Exclude section headers
+                        'Loan', 'Credit', 'Cryptocurrency'] and  # Exclude section headers
             len(line) > 4 and  # Must be longer than simple section headers
-            any(keyword in line.lower() for keyword in ['manual loan', 'mortgage loan', 'credit card', 'line of credit'])):
+            not is_date_time and  # Exclude date/time patterns
+            (any(keyword in line.lower() for keyword in ['manual loan', 'mortgage loan', 'credit card', 'line of credit']) or
+             any(pattern in line for pattern in ['Investment Holdings', 'Crypto', 'Manual']) or  # Investment-related patterns
+             (len(line) > 8 and any(char.isupper() for char in line) and ' ' in line))):  # Generic account name pattern
 
             potential_account_name = line
 
@@ -809,15 +923,17 @@ def extract_net_worth_data(text_content):
 
                 # Look for indented provider (starts with significant spaces and contains known provider patterns)
                 if (len(current_line) > len(next_line) and len(current_line) >= 14 and
-                    current_line.startswith('              ') and
-                    any(prov in next_line for prov in ['MorganStanley', 'Apple Federal', 'Wells Fargo', 'Chase', 'Fidelity'])):
+                    current_line.startswith('              ') and next_line and
+                    (any(prov in next_line for prov in ['MorganStanley', 'Apple Federal', 'Wells Fargo', 'Chase', 'Fidelity']) or
+                     len(next_line) > 3 and next_line.replace(' ', '').isalpha())):  # Any alphabetic provider name
                     provider = next_line
                     j += 1
                     continue
 
                 # Look for account type
                 if (not account_type and next_line in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
-                               '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets']):
+                               '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
+                               'Cryptocurrency']):
                     account_type = next_line
                     j += 1
                     continue
@@ -851,17 +967,32 @@ def extract_net_worth_data(text_content):
                 if account_type_lower in ['checking', 'savings']:
                     category = 'Cash'
                 elif account_type_lower == 'investment':
-                    category = 'Taxed Investment'
+                    category = 'Investment Brokerage'
+                elif account_type_lower == 'cryptocurrency':
+                    category = 'Investment Brokerage'  # Treat crypto as investment brokerage
                 elif '401k' in account_type_lower or 'ira' in account_type_lower:
-                    category = 'Pre-tax Investment'
-                elif account_type_lower in ['personal', 'line of credit']:
+                    category = 'Investment Retirement'
+                elif account_type_lower == 'personal':
                     category = 'Credit'
+                elif account_type_lower == 'line of credit':
+                    category = 'Loan'
                 elif account_type_lower == 'mortgage':
                     category = 'Mortgage'
                 elif account_type_lower == 'assets':
                     category = 'Assets'
                 else:
-                    category = 'Other'
+                    # For unknown types, check account name for clues
+                    account_name_lower = (potential_account_name or '').lower()
+                    if 'crypto' in account_name_lower or 'coinbase' in account_name_lower or 'webull' in account_name_lower:
+                        category = 'Investment'
+                    else:
+                        category = 'Other'
+
+                # Fix account names that look like dates/times by using provider instead
+                if (potential_account_name and provider and
+                    (re.match(r'^\d{1,2}/\d{1,2}/\d{4}', potential_account_name) or  # Date pattern like 2/15/2022
+                     re.match(r'^\d{1,2}:\d{2}[AP]M$', potential_account_name))):    # Time pattern like 2:43PM
+                    potential_account_name = provider
 
                 accounts.append({
                     'Account': potential_account_name,
@@ -922,13 +1053,74 @@ def extract_net_worth_data(text_content):
         })
 
     # Remove duplicates while preserving order
+    # First pass: exact duplicates (same account, balance, provider)
     seen = set()
-    unique_accounts = []
+    filtered_accounts = []
     for account in accounts:
         key = (account['Account'], account['Balance'], account['Provider'])
         if key not in seen:
             seen.add(key)
-            unique_accounts.append(account)
+            filtered_accounts.append(account)
+
+    # Second pass: remove duplicates based on same balance and similar account names
+    unique_accounts = []
+    balance_groups = {}
+
+    # Group accounts by balance
+    for account in filtered_accounts:
+        balance = account['Balance']
+        if balance not in balance_groups:
+            balance_groups[balance] = []
+        balance_groups[balance].append(account)
+
+    # For each balance group, keep only unique accounts
+    for balance, account_list in balance_groups.items():
+        if len(account_list) == 1:
+            # Only one account with this balance, keep it
+            unique_accounts.extend(account_list)
+        else:
+            # Multiple accounts with same balance, need to deduplicate
+            # Look for patterns that indicate same account with different names
+            accounts_to_keep = []
+            skip_indices = set()
+
+            for i, account in enumerate(account_list):
+                if i in skip_indices:
+                    continue
+
+                account_name = account['Account'].lower()
+                is_duplicate = False
+
+                # Check against other accounts in this balance group
+                for j, other_account in enumerate(account_list):
+                    if i != j and j not in skip_indices:
+                        other_name = other_account['Account'].lower()
+
+                        # Check if accounts are likely the same based on similar names or providers
+                        if (
+                            # Same provider and similar account types (crypto accounts)
+                            ('coinbase' in account['Provider'].lower() and 'coinbase' in other_account['Provider'].lower() and
+                             ('crypto' in account_name or 'crypto' in other_name)) or
+                            # One account name is contained in the other
+                            (account_name in other_name or other_name in account_name) or
+                            # Both contain the same provider name in account name
+                            (account['Provider'].lower() in account_name and
+                             account['Provider'].lower() in other_name) or
+                            # Special case: "Cryptocurrency" + "Coinbase" provider vs "Coinbase Crypto" + "Coinbase" provider
+                            ((account_name == 'cryptocurrency' and 'coinbase' in account['Provider'].lower()) and
+                             ('coinbase' in other_name and 'coinbase' in other_account['Provider'].lower()))
+                        ):
+                            # Keep the more descriptive account name (longer usually better)
+                            if len(account['Account']) >= len(other_account['Account']):
+                                skip_indices.add(j)
+                            else:
+                                is_duplicate = True
+                                break
+
+                if not is_duplicate:
+                    accounts_to_keep.append(account)
+
+            unique_accounts.extend(accounts_to_keep)
 
     if not unique_accounts:
         return "Could not extract net worth data: No account information found in the expected format"

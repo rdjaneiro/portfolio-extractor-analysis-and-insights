@@ -6,7 +6,7 @@ matplotlib
 xlsxwriter
 tabulate
 plotly
-dotenv
+python-dotenv
 openai
 anthropic
 diskcache
