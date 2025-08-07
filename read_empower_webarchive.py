@@ -543,6 +543,15 @@ def extract_net_worth_data(text_content):
                     j += 1
                     continue
 
+                # Stop if we encounter another provider (avoid cross-contamination)
+                if any(other_provider in next_line for other_provider in [
+                    'Apple Federal Credit Union', 'Charles Schwab', 'Fidelity', 'Morgan Stanley', 'M1 Finance',
+                    'Manual Investment Holdings', 'Wells Fargo', 'Chase', 'American Express', 'Brex',
+                    'E*TRADE', 'T-RowePrice Manual Holdings', 'Bluevine', 'Webull', 'Coinbase', 'Truist',
+                    'MorganStanley', 'Manual', 'Cyber Connective Corporation'
+                ]) and next_line != provider:
+                    break
+
                 # Check for account name pattern (contains "Ending in" or looks like account name)
                 # Exclude lines that start with currency symbols to avoid capturing balances as account names
                 if (not account_name and
@@ -571,10 +580,24 @@ def extract_net_worth_data(text_content):
                     continue
 
                 # Check for balance (multiple formats: $123.45, -$123.45, -123.45)
+                # Collect all potential balances and choose the most appropriate one
                 if ((next_line.startswith('$') or next_line.startswith('-$') or next_line.startswith('-')) and
                     any(c.isdigit() for c in next_line) and
                     ('.' in next_line or next_line.replace('$', '').replace('-', '').replace(',', '').isdigit())):
-                    balance = next_line
+                    # If we haven't found a balance yet, take this one
+                    if not balance:
+                        balance = next_line
+                    else:
+                        # If we already have a balance, compare amounts and keep the larger one for investment accounts
+                        # This helps avoid taking daily change amounts instead of actual balances
+                        try:
+                            current_amount = abs(float(balance.replace('$', '').replace(',', '').replace('-', '')))
+                            new_amount = abs(float(next_line.replace('$', '').replace(',', '').replace('-', '')))
+                            # For investment accounts, prefer larger amounts (actual balance vs daily change)
+                            if new_amount > current_amount and new_amount > 1000:  # Only if significantly larger and substantial
+                                balance = next_line
+                        except ValueError:
+                            pass  # Keep existing balance if parsing fails
                     j += 1
                     continue
 
@@ -608,28 +631,27 @@ def extract_net_worth_data(text_content):
 
                 # First check if we're in a specific group context
                 if current_group == 'Other Asset':
-                    category = 'Other'
+                    category = 'Other Asset'
                 elif account_type_lower in ['checking', 'savings']:
                     category = 'Cash'
                 elif account_type_lower == 'investment':
-                    category = 'Investment Brokerage'
-                elif account_type_lower == 'cryptocurrency':
-                    category = 'Investment Brokerage'  # Treat crypto as investment brokerage
+                    category = 'Investment'
                 elif '401k' in account_type_lower or 'ira' in account_type_lower:
-                    category = 'Investment Retirement'
+                    category = 'Retirement'
                 elif account_type_lower == 'personal':
                     category = 'Credit'
                 elif account_type_lower == 'line of credit':
                     category = 'Loan'
                 elif account_type_lower == 'mortgage':
                     category = 'Mortgage'
-                elif account_type_lower in ['assets', 'property']:
-                    category = 'Other'
+                elif account_type_lower == 'assets':
+                    # Map 'assets' type to 'Other Asset' category to match JSON format
+                    category = 'Other Asset'
                 else:
                     # Check if account name suggests it's a property/real estate asset
                     account_name_lower = (account_name or '').lower()
-                    if any(keyword in account_name_lower for keyword in ['home', 'house', 'property', 'real estate', 'land', 'zestimate']):
-                        category = 'Other'
+                    if any(keyword in account_name_lower for keyword in ['home', 'house', 'property', 'real estate', 'land']):
+                        category = 'Other Asset'
                     else:
                         category = 'Other'
 
@@ -691,7 +713,7 @@ def extract_net_worth_data(text_content):
                             'Account': current_property['name'],
                             'Type': 'Property',
                             'Balance': current_property['amount'],
-                            'Category': 'Other',
+                            'Category': 'Other Asset',
                             'Provider': 'Empower Manual',
                             'Date': current_property.get('date', 'Unknown')
                         })
@@ -728,7 +750,7 @@ def extract_net_worth_data(text_content):
                 'Account': current_property['name'],
                 'Type': 'Property',
                 'Balance': current_property['amount'],
-                'Category': 'Other',
+                'Category': 'Other Asset',
                 'Provider': 'Empower Manual',
                 'Date': current_property.get('date', 'Unknown')
             })
@@ -803,6 +825,10 @@ def extract_net_worth_data(text_content):
                     j += 1
                     continue
 
+                # Stop if we encounter another provider (avoid cross-contamination)
+                if next_line in ['Brex', 'Chase', 'American Express', 'Wells Fargo', 'Fidelity', 'Morgan Stanley', 'Bluevine', 'Webull', 'Coinbase', 'Apple Federal Credit Union'] and next_line != provider:
+                    break
+
                 # Look for indented account name (has significant leading spaces)
                 if (len(current_line) > len(next_line) and len(current_line) >= 14 and
                     current_line.startswith('              ') and next_line and
@@ -823,10 +849,24 @@ def extract_net_worth_data(text_content):
                     continue
 
                 # Look for balance (including negative balances)
+                # Collect all potential balances and choose the most appropriate one
                 if ((next_line.startswith('$') or next_line.startswith('-$') or next_line.startswith('-')) and
                     any(c.isdigit() for c in next_line) and
                     ('.' in next_line or next_line.replace('$', '').replace('-', '').replace(',', '').isdigit())):
-                    balance = next_line
+                    # If we haven't found a balance yet, take this one
+                    if not balance:
+                        balance = next_line
+                    else:
+                        # If we already have a balance, compare amounts and keep the larger one for investment accounts
+                        # This helps avoid taking daily change amounts instead of actual balances
+                        try:
+                            current_amount = abs(float(balance.replace('$', '').replace(',', '').replace('-', '')))
+                            new_amount = abs(float(next_line.replace('$', '').replace(',', '').replace('-', '')))
+                            # For investment accounts, prefer larger amounts (actual balance vs daily change)
+                            if new_amount > current_amount and new_amount > 1000:  # Only if significantly larger and substantial
+                                balance = next_line
+                        except ValueError:
+                            pass  # Keep existing balance if parsing fails
                     j += 1
                     continue
 
@@ -851,19 +891,17 @@ def extract_net_worth_data(text_content):
                 if account_type_lower in ['checking', 'savings']:
                     category = 'Cash'
                 elif account_type_lower == 'investment':
-                    category = 'Investment Brokerage'
-                elif account_type_lower == 'cryptocurrency':
-                    category = 'Investment Brokerage'  # Treat crypto as investment brokerage
+                    category = 'Investment'
                 elif '401k' in account_type_lower or 'ira' in account_type_lower:
-                    category = 'Investment Retirement'
+                    category = 'Retirement'
                 elif account_type_lower == 'personal':
                     category = 'Credit'
                 elif account_type_lower == 'line of credit':
                     category = 'Loan'
                 elif account_type_lower == 'mortgage':
                     category = 'Mortgage'
-                elif account_type_lower in ['assets', 'property']:
-                    category = 'Other'
+                elif account_type_lower == 'assets':
+                    category = 'Assets'
                 else:
                     category = 'Other'
 
@@ -921,6 +959,15 @@ def extract_net_worth_data(text_content):
                     j += 1
                     continue
 
+                # Stop if we encounter another provider section (avoid cross-contamination)
+                if any(other_provider in next_line for other_provider in [
+                    'Apple Federal Credit Union', 'Charles Schwab', 'Fidelity', 'Morgan Stanley', 'M1 Finance',
+                    'Manual Investment Holdings', 'Wells Fargo', 'Chase', 'American Express', 'Brex',
+                    'E*TRADE', 'T-RowePrice Manual Holdings', 'Bluevine', 'Webull', 'Coinbase', 'Truist',
+                    'MorganStanley', 'Manual', 'Cyber Connective Corporation'
+                ]) and provider and next_line != provider:
+                    break
+
                 # Look for indented provider (starts with significant spaces and contains known provider patterns)
                 if (len(current_line) > len(next_line) and len(current_line) >= 14 and
                     current_line.startswith('              ') and next_line and
@@ -939,10 +986,24 @@ def extract_net_worth_data(text_content):
                     continue
 
                 # Look for balance
+                # Collect all potential balances and choose the most appropriate one
                 if ((next_line.startswith('$') or next_line.startswith('-$') or next_line.startswith('-')) and
                     any(c.isdigit() for c in next_line) and
                     ('.' in next_line or next_line.replace('$', '').replace('-', '').replace(',', '').isdigit())):
-                    balance = next_line
+                    # If we haven't found a balance yet, take this one
+                    if not balance:
+                        balance = next_line
+                    else:
+                        # If we already have a balance, compare amounts and keep the larger one for investment accounts
+                        # This helps avoid taking daily change amounts instead of actual balances
+                        try:
+                            current_amount = abs(float(balance.replace('$', '').replace(',', '').replace('-', '')))
+                            new_amount = abs(float(next_line.replace('$', '').replace(',', '').replace('-', '')))
+                            # For investment accounts, prefer larger amounts (actual balance vs daily change)
+                            if new_amount > current_amount and new_amount > 1000:  # Only if significantly larger and substantial
+                                balance = next_line
+                        except ValueError:
+                            pass  # Keep existing balance if parsing fails
                     j += 1
                     continue
 
@@ -967,11 +1028,11 @@ def extract_net_worth_data(text_content):
                 if account_type_lower in ['checking', 'savings']:
                     category = 'Cash'
                 elif account_type_lower == 'investment':
-                    category = 'Investment Brokerage'
+                    category = 'Investment'
                 elif account_type_lower == 'cryptocurrency':
-                    category = 'Investment Brokerage'  # Treat crypto as investment brokerage
+                    category = 'Investment'  # Treat crypto as investment since it appears under Investment section in Empower
                 elif '401k' in account_type_lower or 'ira' in account_type_lower:
-                    category = 'Investment Retirement'
+                    category = 'Retirement'
                 elif account_type_lower == 'personal':
                     category = 'Credit'
                 elif account_type_lower == 'line of credit':
@@ -1062,12 +1123,50 @@ def extract_net_worth_data(text_content):
             seen.add(key)
             filtered_accounts.append(account)
 
+    # New pass: Handle accounts with same name and provider but different balances
+    # Keep the account with non-zero balance, or the larger balance if both are non-zero
+    account_name_groups = {}
+    for account in filtered_accounts:
+        account_key = (account['Account'], account['Provider'])
+        if account_key not in account_name_groups:
+            account_name_groups[account_key] = []
+        account_name_groups[account_key].append(account)
+
+    # Process each account name group
+    accounts_after_name_dedup = []
+    for account_key, account_list in account_name_groups.items():
+        if len(account_list) == 1:
+            # Only one account with this name/provider combination
+            accounts_after_name_dedup.extend(account_list)
+        else:
+            # Multiple accounts with same name/provider, choose the best one
+            best_account = None
+            for account in account_list:
+                try:
+                    balance_val = float(account['Balance'].replace(',', ''))
+                    if best_account is None:
+                        best_account = account
+                    else:
+                        best_balance = float(best_account['Balance'].replace(',', ''))
+                        # Prefer non-zero balances, and among non-zero balances, prefer larger absolute values
+                        if best_balance == 0 and balance_val != 0:
+                            best_account = account
+                        elif best_balance != 0 and balance_val != 0 and abs(balance_val) > abs(best_balance):
+                            best_account = account
+                except ValueError:
+                    # If we can't parse balance, keep the current best
+                    if best_account is None:
+                        best_account = account
+
+            if best_account:
+                accounts_after_name_dedup.append(best_account)
+
     # Second pass: remove duplicates based on same balance and similar account names
     unique_accounts = []
     balance_groups = {}
 
     # Group accounts by balance
-    for account in filtered_accounts:
+    for account in accounts_after_name_dedup:
         balance = account['Balance']
         if balance not in balance_groups:
             balance_groups[balance] = []

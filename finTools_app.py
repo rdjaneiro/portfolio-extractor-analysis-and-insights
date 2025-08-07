@@ -883,17 +883,12 @@ def create_morningstar_csv(df, output_file_base):
             symbol = 'CASH$'
 
         ms_data.append({
-            'Name': name,
             'Symbol': symbol,
-            'Action': 'buy',  # Default to buy for existing holdings
-            'Shares': shares,
-            'Price': price,
-            'Commission': '0',  # Default to 0 commission
-            'Date': ''  # Leave date empty as we don't have transaction dates
+            'Shares': shares
         })
 
-    # Create DataFrame with proper column order
-    ms_df = pd.DataFrame(ms_data, columns=['Name', 'Symbol', 'Action', 'Shares', 'Price', 'Commission', 'Date'])
+    # Create DataFrame with only Symbol and Shares columns
+    ms_df = pd.DataFrame(ms_data, columns=['Symbol', 'Shares'])
 
     # Save to CSV in user-specific directory
     user_dir = ensure_user_files_dir()
