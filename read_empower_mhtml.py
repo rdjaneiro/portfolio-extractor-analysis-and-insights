@@ -625,6 +625,90 @@ def extract_net_worth_data(text_content):
 
             i = j if found_balance else i + 1
 
+                # Look for provider-specific account patterns (like MorganStanley-LAL)
+        elif any(provider_pattern in line for provider_pattern in ['MorganStanley-', 'CharlesSchwab-', 'Fidelity-']):
+            current_account = line
+            # Extract provider from pattern like "MorganStanley-LAL" and normalize it
+            provider_name = line.split('-')[0]
+            if provider_name == 'MorganStanley':
+                current_provider = 'Morgan Stanley'
+            elif provider_name == 'CharlesSchwab':
+                current_provider = 'Charles Schwab'
+            elif provider_name == 'Fidelity':
+                current_provider = 'Fidelity'
+            else:
+                current_provider = provider_name
+
+            # Look ahead for account type and balance
+            j = i + 1
+            found_balance = False
+            account_type = 'Unknown'
+
+            while j < len(lines) and j < i + 10:  # Look ahead up to 10 lines
+                next_line = lines[j].strip()
+
+                if not next_line:
+                    j += 1
+                    continue
+
+                # Check if this is an account type
+                if next_line in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
+                               '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
+                               'Line Of Credit', 'Cryptocurrency']:
+                    account_type = next_line
+                    j += 1
+                    continue
+
+                # Check if this is a balance (negative amounts for liabilities)
+                if ((next_line.startswith('$') or next_line.startswith('-$')) and
+                    any(c.isdigit() for c in next_line)):
+                    try:
+                        # Handle negative balances properly
+                        is_negative = next_line.startswith('-$')
+                        balance_str = next_line.replace('$', '').replace(',', '')
+                        if is_negative:
+                            balance_str = next_line.replace('-$', '').replace(',', '')
+                            balance_str = f"-{balance_str}"  # Keep the negative sign
+                        else:
+                            balance_str = next_line.replace('$', '').replace(',', '')
+
+                        balance_float = float(balance_str)
+
+                        # Determine category based on account type
+                        category = 'Unknown'
+                        if account_type.lower() in ['checking', 'savings']:
+                            category = 'Cash'
+                        elif account_type.lower() == 'investment':
+                            category = 'Investment'
+                        elif '401k' in account_type.lower() or 'ira' in account_type.lower():
+                            category = 'Investment'
+                        elif account_type.lower() == 'personal':
+                            category = 'Credit'
+                        elif account_type.lower() in ['line of credit', 'line of credit']:
+                            category = 'Loan'
+                        elif account_type.lower() == 'mortgage':
+                            category = 'Mortgage'
+                        elif account_type.lower() == 'assets':
+                            category = 'Other Asset'
+
+                        accounts.append({
+                            'Account': current_account,
+                            'Type': account_type,
+                            'Balance': balance_str,
+                            'Category': category,
+                            'Provider': current_provider
+                        })
+
+                        found_balance = True
+                        break
+
+                    except ValueError:
+                        pass
+
+                j += 1
+
+            i = j if found_balance else i + 1
+
         # Also look for manual entries or special patterns
         elif any(term in line for term in ['Manual Investment Holdings', 'Manual entry']):
             # Look for associated balance

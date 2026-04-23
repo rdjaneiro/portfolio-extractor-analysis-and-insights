@@ -6,7 +6,7 @@ from logging.handlers import RotatingFileHandler
 def setup_logging():
     """Configure application logging"""
     # Configure logger
-    logger = logging.getLogger("dashCoachAI_app")
+    logger = logging.getLogger("portfolioTools_app")
     logger.setLevel(logging.DEBUG)
 
     # Configure root logger first to capture all logs
@@ -30,7 +30,7 @@ def setup_logging():
 
     # Add file handler to root logger only
     file_handler = RotatingFileHandler(
-        "logs/dashCoachAI_app.log",
+        "logs/portfolioTools_app.log",
         maxBytes=1024*1024,
         backupCount=3
     )

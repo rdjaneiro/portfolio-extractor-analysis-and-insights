@@ -229,6 +229,196 @@ def format_networth_timeline_as_text(networth_data):
 
     return text
 
+def create_networth_timeline_chart(df):
+    """Create an interactive area chart for net worth timeline data similar to Empower's interface"""
+    try:
+        # Ensure we have the required columns
+        if 'Date' not in df.columns or 'Balance' not in df.columns:
+            return None
+
+        # Convert date to datetime and sort by date
+        df_chart = df.copy()
+        df_chart['Date'] = pd.to_datetime(df_chart['Date'])
+        df_chart = df_chart.sort_values('Date')
+
+        # Handle balance formatting (remove $ and commas if present)
+        if df_chart['Balance'].dtype == 'object':
+            df_chart['Balance_numeric'] = df_chart['Balance'].replace(r'[\$,]', '', regex=True).astype(float)
+        else:
+            df_chart['Balance_numeric'] = df_chart['Balance']
+
+        # Calculate statistics
+        current_value = df_chart['Balance_numeric'].iloc[-1]
+        start_value = df_chart['Balance_numeric'].iloc[0]
+        total_change = current_value - start_value
+        total_change_pct = (total_change / start_value * 100) if start_value != 0 else 0
+        date_range_days = (df_chart['Date'].max() - df_chart['Date'].min()).days
+
+        # Get one day change if available
+        one_day_change = df_chart['One Day Change'].iloc[-1] if 'One Day Change' in df_chart.columns else 0
+
+        # Create the area chart with styling similar to the Empower UI
+        fig = go.Figure()
+
+        # Add the main net worth area trace with blue fill
+        fig.add_trace(go.Scatter(
+            x=df_chart['Date'],
+            y=df_chart['Balance_numeric'],
+            mode='lines',
+            name='Net Worth',
+            fill='tozeroy',
+            line=dict(color='#0066CC', width=1.5),
+            fillcolor='rgba(0, 102, 204, 0.4)',
+            hovertemplate='<b>%{x|%b %d, %Y}</b><br>Net Worth: $%{y:,.2f}<extra></extra>'
+        ))
+
+        # Add horizontal reference lines at key levels
+        min_val = df_chart['Balance_numeric'].min()
+        max_val = df_chart['Balance_numeric'].max()
+
+        # Add dotted horizontal gridlines
+        for y_val in np.linspace(min_val, max_val, 5):
+            fig.add_hline(
+                y=y_val,
+                line_dash="dot",
+                line_color="rgba(150, 150, 150, 0.3)",
+                line_width=1
+            )
+
+        # Update layout with styling similar to Empower
+        fig.update_layout(
+            title=dict(
+                text=(f'<b>Net Worth</b><br>'
+                      f'<span style="font-size:11px;">ALL ACCOUNTS: <b>${current_value:,.2f}</b> | '
+                      f'{date_range_days} days: <span style="color:{"green" if total_change >= 0 else "red"}">+${total_change:,.0f}</span> | '
+                      f'1-day change: <span style="color:{"green" if one_day_change >= 0 else "red"}">+${one_day_change:,.0f}</span></span>'),
+                x=0.01,
+                xanchor='left',
+                font=dict(size=16, color='black')
+            ),
+            xaxis=dict(
+                title='',
+                showgrid=False,
+                zeroline=False,
+                tickformat='%m/%d/%Y',
+                tickangle=-45,
+                tickfont=dict(color='black', size=12),
+                linecolor='black'
+            ),
+            yaxis=dict(
+                title='',
+                showgrid=False,
+                zeroline=False,
+                tickformat='$,.1s',
+                side='right',
+                ticksuffix='M' if current_value > 1000000 else '',
+                tickfont=dict(color='black', size=12),
+                linecolor='black'
+            ),
+            hovermode='x unified',
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            height=500,
+            margin=dict(l=20, r=60, t=80, b=80),
+            showlegend=False,
+            font=dict(color='black')
+        )
+
+        return fig
+    except Exception as e:
+        st.error(f"Error creating timeline chart: {str(e)}")
+        return None
+
+def create_networth_category_timeline_chart(df):
+    """Create stacked area chart showing net worth breakdown by category over time"""
+    try:
+        # Check if we have the required category columns
+        category_columns = ['Total Cash', 'Total Investment', 'Total Credit', 'Total Loan', 'Total Mortgage', 'Total Other Assets']
+        available_categories = [col for col in category_columns if col in df.columns]
+
+        if 'Date' not in df.columns or not available_categories:
+            return None
+
+        # Prepare data
+        df_chart = df.copy()
+        df_chart['Date'] = pd.to_datetime(df_chart['Date'])
+        df_chart = df_chart.sort_values('Date')
+
+        # Convert numeric columns
+        for col in available_categories:
+            if df_chart[col].dtype == 'object':
+                df_chart[col] = df_chart[col].replace(r'[\$,]', '', regex=True).astype(float)
+
+        # Create figure with stacked area traces
+        fig = go.Figure()
+
+        # Define colors for each category
+        colors = {
+            'Total Cash': '#2ecc71',
+            'Total Investment': '#3498db',
+            'Total Credit': '#e74c3c',
+            'Total Loan': '#e67e22',
+            'Total Mortgage': '#95a5a6',
+            'Total Other Assets': '#9b59b6'
+        }
+
+        # Add asset categories (positive values)
+        asset_categories = ['Total Cash', 'Total Investment', 'Total Other Assets']
+        for category in asset_categories:
+            if category in available_categories:
+                fig.add_trace(go.Scatter(
+                    x=df_chart['Date'],
+                    y=df_chart[category],
+                    mode='lines',
+                    name=category.replace('Total ', ''),
+                    stackgroup='assets',
+                    line=dict(width=0.5, color=colors.get(category, '#999')),
+                    fillcolor=colors.get(category, '#999'),
+                    hovertemplate='<b>%{fullData.name}</b><br>$%{y:,.2f}<extra></extra>'
+                ))
+
+        # Update layout
+        fig.update_layout(
+            title=dict(
+                text='Net Worth Breakdown Over Time',
+                font=dict(color='black', size=16)
+            ),
+            xaxis=dict(
+                title=dict(text='Date', font=dict(color='black', size=12)),
+                showgrid=True,
+                gridcolor='rgba(200, 200, 200, 0.2)',
+                tickfont=dict(color='black', size=11),
+                linecolor='black'
+            ),
+            yaxis=dict(
+                title=dict(text='Amount ($)', font=dict(color='black', size=12)),
+                showgrid=True,
+                gridcolor='rgba(200, 200, 200, 0.2)',
+                tickformat='$,.0f',
+                tickfont=dict(color='black', size=11),
+                linecolor='black'
+            ),
+            hovermode='x unified',
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            height=400,
+            margin=dict(l=60, r=40, t=60, b=60),
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=-0.3,
+                xanchor='center',
+                x=0.5,
+                font=dict(color='black', size=11)
+            ),
+            font=dict(color='black')
+        )
+
+        return fig
+    except Exception as e:
+        st.error(f"Error creating category timeline chart: {str(e)}")
+        return None
+
 # Initialize session state variables
 if 'processed_result' not in st.session_state:
     st.session_state.processed_result = None
@@ -1010,6 +1200,22 @@ def main():
     # Use stored result if available
     result = st.session_state.processed_result
 
+    # Handle error case first
+    if result and not result.get("success", False):
+        # Processing failed - display error message
+        st.error("❌ Failed to process file")
+        if result.get("error"):
+            st.error(result["error"])
+
+        # Show raw data if available for debugging
+        if result.get("raw_data_path") and os.path.exists(result["raw_data_path"]):
+            with st.expander("View Raw Extracted Data (for debugging)"):
+                with open(result["raw_data_path"], "r", encoding="utf-8") as f:
+                    st.text(f.read()[:5000])  # Show first 5000 characters
+
+        # Show instructions again after error
+        st.markdown("---")
+
     if result and result.get("success", False):
         # Get file type for display
         file_type = result.get("file_type", "unknown")
@@ -1102,15 +1308,109 @@ def main():
 
                 # Check if this is JSON net worth data (timeline data)
                 if result.get("file_type") == "json" and 'Date' in df.columns:
-                    # For JSON files, show ALL dates but only remove basic account-level columns
-                    # Keep the detailed asset/liability breakdown columns
-                    columns_to_remove = ['Account', 'Type', 'Category']
-                    display_df = df.drop(columns=[col for col in columns_to_remove if col in df.columns])
+                    # Add account type filter tabs similar to Empower
+                    account_tabs = st.tabs(["All", "Cash", "Investment", "Credit", "Loan", "Mortgage", "Other"])
 
-                    # Sort by date (most recent first) for better presentation
-                    display_df = display_df.sort_values('Date', ascending=False)
+                    with account_tabs[0]:  # All
+                        # Create and display the timeline visualization
+                        timeline_chart = create_networth_timeline_chart(df)
+                        if timeline_chart:
+                            st.plotly_chart(timeline_chart, use_container_width=True)
 
-                    st.dataframe(display_df, hide_index=True)
+                    with account_tabs[1]:  # Cash
+                        if 'Total Cash' in df.columns:
+                            df_cash = df.copy()
+                            df_cash['Balance'] = df_cash['Total Cash']
+                            chart_cash = create_networth_timeline_chart(df_cash)
+                            if chart_cash:
+                                chart_cash.update_layout(title=dict(text='<b>Cash Accounts</b>'))
+                                st.plotly_chart(chart_cash, use_container_width=True)
+
+                    with account_tabs[2]:  # Investment
+                        if 'Total Investment' in df.columns:
+                            df_inv = df.copy()
+                            df_inv['Balance'] = df_inv['Total Investment']
+                            chart_inv = create_networth_timeline_chart(df_inv)
+                            if chart_inv:
+                                chart_inv.update_layout(title=dict(text='<b>Investment Accounts</b>'))
+                                st.plotly_chart(chart_inv, use_container_width=True)
+
+                    with account_tabs[3]:  # Credit
+                        if 'Total Credit' in df.columns:
+                            df_credit = df.copy()
+                            df_credit['Balance'] = df_credit['Total Credit'] * -1  # Show as positive for display
+                            chart_credit = create_networth_timeline_chart(df_credit)
+                            if chart_credit:
+                                chart_credit.update_layout(title=dict(text='<b>Credit Accounts</b>'))
+                                st.plotly_chart(chart_credit, use_container_width=True)
+
+                    with account_tabs[4]:  # Loan
+                        if 'Total Loan' in df.columns:
+                            df_loan = df.copy()
+                            df_loan['Balance'] = df_loan['Total Loan'] * -1  # Show as positive for display
+                            chart_loan = create_networth_timeline_chart(df_loan)
+                            if chart_loan:
+                                chart_loan.update_layout(title=dict(text='<b>Loan Accounts</b>'))
+                                st.plotly_chart(chart_loan, use_container_width=True)
+
+                    with account_tabs[5]:  # Mortgage
+                        if 'Total Mortgage' in df.columns:
+                            df_mortgage = df.copy()
+                            df_mortgage['Balance'] = df_mortgage['Total Mortgage'] * -1  # Show as positive for display
+                            chart_mortgage = create_networth_timeline_chart(df_mortgage)
+                            if chart_mortgage:
+                                chart_mortgage.update_layout(title=dict(text='<b>Mortgage Accounts</b>'))
+                                st.plotly_chart(chart_mortgage, use_container_width=True)
+
+                    with account_tabs[6]:  # Other
+                        if 'Total Other Assets' in df.columns:
+                            df_other = df.copy()
+                            df_other['Balance'] = df_other['Total Other Assets']
+                            chart_other = create_networth_timeline_chart(df_other)
+                            if chart_other:
+                                chart_other.update_layout(title=dict(text='<b>Other Assets</b>'))
+                                st.plotly_chart(chart_other, use_container_width=True)
+
+                    # Create and display the category breakdown over time
+                    category_chart = create_networth_category_timeline_chart(df)
+                    if category_chart:
+                        st.plotly_chart(category_chart, use_container_width=True)
+
+                    # Add a tab view for different time ranges
+                    st.subheader("Timeline Data")
+                    time_range_tabs = st.tabs(["All Time", "Last 90 Days", "Last 30 Days", "Last 7 Days"])
+
+                    with time_range_tabs[0]:
+                        # For JSON files, show ALL dates but only remove basic account-level columns
+                        columns_to_remove = ['Account', 'Type', 'Category']
+                        display_df = df.drop(columns=[col for col in columns_to_remove if col in df.columns])
+                        # Sort by date (most recent first) for better presentation
+                        display_df = display_df.sort_values('Date', ascending=False)
+                        st.dataframe(display_df, hide_index=True)
+
+                    with time_range_tabs[1]:
+                        # Last 90 days
+                        df_sorted = df.sort_values('Date', ascending=False)
+                        df_90 = df_sorted.head(90)
+                        columns_to_remove = ['Account', 'Type', 'Category']
+                        display_df_90 = df_90.drop(columns=[col for col in columns_to_remove if col in df_90.columns])
+                        st.dataframe(display_df_90, hide_index=True)
+
+                    with time_range_tabs[2]:
+                        # Last 30 days
+                        df_sorted = df.sort_values('Date', ascending=False)
+                        df_30 = df_sorted.head(30)
+                        columns_to_remove = ['Account', 'Type', 'Category']
+                        display_df_30 = df_30.drop(columns=[col for col in columns_to_remove if col in df_30.columns])
+                        st.dataframe(display_df_30, hide_index=True)
+
+                    with time_range_tabs[3]:
+                        # Last 7 days
+                        df_sorted = df.sort_values('Date', ascending=False)
+                        df_7 = df_sorted.head(7)
+                        columns_to_remove = ['Account', 'Type', 'Category']
+                        display_df_7 = df_7.drop(columns=[col for col in columns_to_remove if col in df_7.columns])
+                        st.dataframe(display_df_7, hide_index=True)
                 else:
                     # Display only individual accounts (exclude TOTAL NET WORTH row) for non-JSON files
                     accounts_df = df[df['Account'] != 'TOTAL NET WORTH'].copy()
@@ -1135,12 +1435,14 @@ def main():
                     # For JSON files, show comprehensive breakdown with all total fields
                     if result.get("file_type") == "json":
                         # Primary metrics row
-                        col1, col2, col3 = st.columns(3)
+                        col1, col2, col3, col4 = st.columns(4)
                         with col1:
                             st.metric(label="Total Net Worth", value=f"${stats['total_net_worth']:,.2f}")
                         with col2:
                             st.metric(label="Total Assets", value=f"${stats['total_assets']:,.2f}")
                         with col3:
+                            st.metric(label="Total Liquid Assets", value=f"${stats['total_cash'] + stats['total_investment']:,.2f}", help="Cash + Total Investment")
+                        with col4:
                             st.metric(label="Total Liabilities", value=f"${stats['total_liabilities']:,.2f}")
 
                         # Asset breakdown row
@@ -1194,12 +1496,14 @@ def main():
                             )
                     else:
                         # Enhanced layout for non-JSON files with detailed breakdown when available
-                        col1, col2, col3 = st.columns(3)
+                        col1, col2, col3, col4 = st.columns(4)
                         with col1:
                             st.metric(label="Total Net Worth", value=f"${stats['total_net_worth']:,.2f}")
                         with col2:
                             st.metric(label="Total Assets", value=f"${stats['total_assets']:,.2f}")
                         with col3:
+                            st.metric(label="Total Liquid Assets", value=f"${stats.get('total_cash', 0) + stats.get('total_investment', 0):,.2f}", help="Cash + Total Investment")
+                        with col4:
                             st.metric(label="Total Liabilities", value=f"${stats['total_liabilities']:,.2f}")
 
                         # Show detailed breakdown if we have category data
@@ -1224,7 +1528,7 @@ def main():
                             with col5b:
                                 st.metric(label="Total Investment", value=f"${stats['total_investment']:,.2f}", help="Combined Brokerage + Retirement")
                             with col6b:
-                                st.metric(label=" ", value=" ", label_visibility="hidden")  # Empty column for spacing
+                                st.metric(label="Total Portfolio", value=f"${stats['total_cash'] + stats['total_investment']:,.2f}", help="Cash + Total Investment")
                             with col7b:
                                 st.metric(label="  ", value="  ", label_visibility="hidden")  # Empty column for spacing
 
@@ -1708,8 +2012,8 @@ def main():
                         with asset_col2:
                             st.plotly_chart(fig_asset_bar, use_container_width=True)
 
-    else:
-        # No file processed yet, show instructions
+    if not result or not result.get("success", False):
+        # No file processed yet or processing failed, show instructions
         st.markdown("""
         ### Empower Portfolio & Net Worth Extractor
         1. **Get your data from Empower**:

@@ -122,13 +122,24 @@ def extract_portfolio_holdings(text_content):
     Shares
     Price
     Change
-    1 Day %
+    1 Day % (optional - not always present in newer formats)
     1 day $
     Value
     """
-    # Look for the holdings section headers pattern
-    holdings_pattern = r"Holding\s+Shares\s+Price\s+Change\s+1 Day %\s+1 day \$\s+Value"
-    if not re.search(holdings_pattern, text_content):
+    # Look for the holdings section headers pattern - support both old and new formats
+    # Old format: "Holding\s+Shares\s+Price\s+Change\s+1 Day %\s+1 day \$\s+Value"
+    # New format: "Holding\s+Shares\s+Price\s+Change\s+1 day \$\s+Value"
+    holdings_pattern_old = r"Holding\s+Shares\s+Price\s+Change\s+1 Day %\s+1 day \$\s+Value"
+    holdings_pattern_new = r"Holding\s+Shares\s+Price\s+Change\s+1 day \$\s+Value"
+
+    has_day_percent = False
+    if re.search(holdings_pattern_old, text_content):
+        holdings_pattern = holdings_pattern_old
+        has_day_percent = True
+    elif re.search(holdings_pattern_new, text_content):
+        holdings_pattern = holdings_pattern_new
+        has_day_percent = False
+    else:
         return "Could not find portfolio holdings section in the file."
 
     # Split the content at the heading line
@@ -157,8 +168,16 @@ def extract_portfolio_holdings(text_content):
     # Track unique tickers to prevent duplicates
     processed_tickers = set()
 
-    # Standard Entries Pattern : Standard entries for stocks - more flexible pattern
-    standard_entries = re.findall(r'([A-Z0-9\.\-]+)(?:\s+([^\n]+?))\s+(\d+(?:\.\d+)?)\s+\$(\d+(?:\.\d+)?)\s+\$?([-+]?\d+(?:\.\d+)?)\s+([-+]?\d+(?:\.\d+)?%)\s+([-+]?\$\d+(?:,\d+)*(?:\.\d+)?)\s+\$(\d+(?:,\d+)*(?:\.\d+)?)', holdings_section)
+    # Standard Entries Pattern - handle both with and without "1 Day %" column
+    if has_day_percent:
+        # Old format with 1 Day % column: Ticker Name Shares Price Change DayPercent DayDollar Value
+        standard_entries = re.findall(r'([A-Z0-9\.\-]+)(?:\s+([^\n]+?))\s+(\d+(?:\.\d+)?)\s+\$(\d+(?:,\d+)*(?:\.\d+)?)\s+\$?([-+]?\d+(?:\.\d+)?)\s+([-+]?\d+(?:\.\d+)?%)\s+([-+]?\$\d+(?:,\d+)*(?:\.\d+)?)\s+\$(\d+(?:,\d+)*(?:\.\d+)?)', holdings_section)
+    else:
+        # New format without 1 Day % column: Ticker Name Shares Price Change DayDollar Value
+        # We'll add a dummy "0.00%" for day_percent to keep the tuple structure consistent
+        raw_entries = re.findall(r'([A-Z0-9\.\-]+)\s+([^\n]+?)\s+(\d+(?:\.\d+)?)\s+\$(\d+(?:,\d+)*(?:\.\d+)?)\s+\$?([-+]?\d+(?:,\d+)*(?:\.\d+)?)\s+([-+]?\$\d+(?:,\d+)*(?:\.\d+)?)\s+\$(\d+(?:,\d+)*(?:\.\d+)?)', holdings_section)
+        # Add dummy day_percent
+        standard_entries = [(e[0], e[1], e[2], e[3], e[4], "0.00%", e[5], e[6]) for e in raw_entries]
 
     for entry in standard_entries:
         ticker = entry[0]
@@ -169,7 +188,12 @@ def extract_portfolio_holdings(text_content):
             print(f"Added standard entry: {ticker}")
 
     # Alternative stock pattern for different spacing or formatting
-    alt_stock_entries = re.findall(r'([A-Z0-9\.\-]+)\s+([^\n]+?)\s+(\d+(?:\.\d+)?)\s+\$(\d+(?:\.\d+)?(?:,\d+)*)\s+([-+]?[^\s]+)\s+([-+]\d+(?:\.\d+)?%)\s+([-+]\$\d+(?:,\d+)*(?:\.\d+)?)\s+\$(\d+(?:,\d+)*(?:\.\d+)?)', holdings_section)
+    if has_day_percent:
+        alt_stock_entries = re.findall(r'([A-Z0-9\.\-]+)\s+([^\n]+?)\s+(\d+(?:\.\d+)?)\s+\$(\d+(?:\.\d+)?(?:,\d+)*)\s+([-+]?[^\s]+)\s+([-+]\d+(?:\.\d+)?%)\s+([-+]\$\d+(?:,\d+)*(?:\.\d+)?)\s+\$(\d+(?:,\d+)*(?:\.\d+)?)', holdings_section)
+    else:
+        raw_alt_entries = re.findall(r'([A-Z0-9\.\-]+)\s+([^\n]+?)\s+(\d+(?:\.\d+)?)\s+\$(\d+(?:\.\d+)?(?:,\d+)*)\s+([-+]?[^\s]+)\s+([-+]\$\d+(?:,\d+)*(?:\.\d+)?)\s+\$(\d+(?:,\d+)*(?:\.\d+)?)', holdings_section)
+        # Add dummy day_percent
+        alt_stock_entries = [(e[0], e[1], e[2], e[3], e[4], "0.00%", e[5], e[6]) for e in raw_alt_entries]
 
     for entry in alt_stock_entries:
         ticker = entry[0]
@@ -179,28 +203,39 @@ def extract_portfolio_holdings(text_content):
             print(f"Added alternative stock entry: {ticker}")
 
     # Cash entries pattern
-    cash_entries = re.findall(r'Cash\s+(\d+(?:\.\d+)?)\s+\$(\d+(?:\.\d+)?)\s+\$?([-+]?\d+(?:\.\d+)?)\s+([-+]?\d+(?:\.\d+)?%)\s+([-+]?\$\d+(?:,\d+)*(?:\.\d+)?)\s+\$(\d+(?:,\d+)*(?:\.\d+)?)', holdings_section)
+    if has_day_percent:
+        cash_entries = re.findall(r'Cash\s+(\d+(?:\.\d+)?)\s+\$(\d+(?:\.\d+)?)\s+\$?([-+]?\d+(?:\.\d+)?)\s+([-+]?\d+(?:\.\d+)?%)\s+([-+]?\$\d+(?:,\d+)*(?:\.\d+)?)\s+\$(\d+(?:,\d+)*(?:\.\d+)?)', holdings_section)
+        cash_entries = [("CASH", "Cash", e[0], e[1], e[2], e[3], e[4], e[5]) for e in cash_entries]
+    else:
+        raw_cash_entries = re.findall(r'Cash\s+(\d+(?:\.\d+)?)\s+\$(\d+(?:\.\d+)?)\s+\$?([-+]?\d+(?:,\d+)*(?:\.\d+)?)\s+([-+]?\$\d+(?:,\d+)*(?:\.\d+)?)\s+\$(\d+(?:,\d+)*(?:\.\d+)?)', holdings_section)
+        cash_entries = [("CASH", "Cash", e[0], e[1], e[2], "0.00%", e[3], e[4]) for e in raw_cash_entries]
 
     for entry in cash_entries:
-        shares, price, change, day_percent, day_dollar, value = entry
         if "CASH" not in processed_tickers:
-            entries.append(("CASH", "Cash", shares, price, change, day_percent, day_dollar, value))
+            entries.append(entry)
             processed_tickers.add("CASH")
 
     # Generic cryptocurrency pattern - more flexible to catch various crypto formats
-    crypto_entries = re.findall(r'([A-Z0-9]+\.COIN|[A-Z]{3,5})[^\n]*?\s+([A-Z0-9]+|[^\n]+?)\s+(\d+\.\d+)\s+\$([0-9,.]+)\s+([-+]?\$?[0-9,.]+)\s+([-+][0-9.]+%)\s+([-+]\$[0-9,.]+)\s+\$([0-9,.]+)', holdings_section)
+    if has_day_percent:
+        crypto_entries = re.findall(r'([A-Z0-9]+\.COIN|[A-Z]{3,5})[^\n]*?\s+([A-Z0-9]+|[^\n]+?)\s+(\d+\.\d+)\s+\$([0-9,.]+)\s+([-+]?\$?[0-9,.]+)\s+([-+][0-9.]+%)\s+([-+]\$[0-9,.]+)\s+\$([0-9,.]+)', holdings_section)
+        crypto_entries = [(e[0], e[1], e[2], e[3].replace(',', ''), e[4].replace('$', ''), e[5], e[6], e[7]) for e in crypto_entries]
+    else:
+        raw_crypto = re.findall(r'([A-Z0-9]+\.COIN|[A-Z]{3,5})[^\n]*?\s+([A-Z0-9]+|[^\n]+?)\s+(\d+\.\d+)\s+\$([0-9,.]+)\s+([-+]?\$?[0-9,.]+)\s+([-+]\$[0-9,.]+)\s+\$([0-9,.]+)', holdings_section)
+        crypto_entries = [(e[0], e[1], e[2], e[3].replace(',', ''), e[4].replace('$', ''), "0.00%", e[5], e[6]) for e in raw_crypto]
 
     for entry in crypto_entries:
         ticker = entry[0]
         if ticker not in processed_tickers:
-            # Clean up the change value to remove any extra $ if present
-            change = entry[4].replace('$', '')
-            entries.append((ticker, entry[1], entry[2], entry[3].replace(',', ''), change, entry[5], entry[6], entry[7]))
+            entries.append(entry)
             processed_tickers.add(ticker)
             print(f"Added crypto entry: {ticker}")
 
     # Add a catch-all pattern for any remaining entries with standard format
-    catchall_entries = re.findall(r'([A-Z0-9\.\-]+)[^\n]*?\n([^\n]+?)\n(\d+(?:\.\d+)?)\n\$(\d+(?:\.\d+)?)\n\$?([-+]?\d+(?:\.\d+)?)\n([-+]?\d+(?:\.\d+)?%)\n([-+]?\$\d+(?:,\d+)*(?:\.\d+)?)\n\$(\d+(?:,\d+)*(?:\.\d+)?)', holdings_section)
+    if has_day_percent:
+        catchall_entries = re.findall(r'([A-Z0-9\.\-]+)[^\n]*?\n([^\n]+?)\n(\d+(?:\.\d+)?)\n\$(\d+(?:\.\d+)?)\n\$?([-+]?\d+(?:\.\d+)?)\n([-+]?\d+(?:\.\d+)?%)\n([-+]?\$\d+(?:,\d+)*(?:\.\d+)?)\n\$(\d+(?:,\d+)*(?:\.\d+)?)', holdings_section)
+    else:
+        raw_catchall = re.findall(r'([A-Z0-9\.\-]+)[^\n]*?\n([^\n]+?)\n(\d+(?:\.\d+)?)\n\$(\d+(?:,\d+)*(?:\.\d+)?)\n\$?([-+]?\d+(?:,\d+)*(?:\.\d+)?)\n([-+]?\$\d+(?:,\d+)*(?:\.\d+)?)\n\$(\d+(?:,\d+)*(?:\.\d+)?)', holdings_section)
+        catchall_entries = [(e[0], e[1], e[2], e[3], e[4], "0.00%", e[5], e[6]) for e in raw_catchall]
 
     for entry in catchall_entries:
         ticker = entry[0]
@@ -524,9 +559,17 @@ def extract_net_worth_data(text_content):
             'Apple Federal Credit Union', 'Charles Schwab', 'Fidelity', 'Morgan Stanley', 'M1 Finance',
             'Manual Investment Holdings', 'Wells Fargo', 'Chase', 'American Express', 'Brex',
             'E*TRADE', 'T-RowePrice Manual Holdings', 'Bluevine', 'Webull', 'Coinbase', 'Truist',
-            'MorganStanley', 'Manual', 'Cyber Connective Corporation'
+            'MorganStanley', 'Manual', 'Cyber Connective Corporation', 'Rocket Mortgage'
         ]):
             provider = line
+
+            # Normalize provider names for special patterns
+            if line.startswith('MorganStanley-'):
+                provider = 'Morgan Stanley'
+            elif line.startswith('CharlesSchwab-'):
+                provider = 'Charles Schwab'
+            elif line.startswith('Fidelity-'):
+                provider = 'Fidelity'
 
             # Look ahead for account details
             j = i + 1
@@ -548,12 +591,13 @@ def extract_net_worth_data(text_content):
                     'Apple Federal Credit Union', 'Charles Schwab', 'Fidelity', 'Morgan Stanley', 'M1 Finance',
                     'Manual Investment Holdings', 'Wells Fargo', 'Chase', 'American Express', 'Brex',
                     'E*TRADE', 'T-RowePrice Manual Holdings', 'Bluevine', 'Webull', 'Coinbase', 'Truist',
-                    'MorganStanley', 'Manual', 'Cyber Connective Corporation'
+                    'MorganStanley', 'Manual', 'Cyber Connective Corporation', 'Rocket Mortgage'
                 ]) and next_line != provider:
                     break
 
                 # Check for account name pattern (contains "Ending in" or looks like account name)
                 # Exclude lines that start with currency symbols to avoid capturing balances as account names
+                # Also check for provider-specific account naming patterns like "MorganStanley-LAL"
                 if (not account_name and
                     ("Ending in" in next_line or "-" in next_line or
                     any(keyword in next_line.lower() for keyword in [
@@ -562,8 +606,11 @@ def extract_net_worth_data(text_content):
                         'advantage', 'afcu', 'cyber', 'schwab', 'rltq', 'sep', 'individual',
                         'lei', 'ai', 'growth', 'crypto', 'aaa', 'consulting', 'platinum',
                         'select', 'uma', 'hilton', 'marriott', 'bonvoy', 'business', 'preferred',
-                        'blue', 'equity', 'ready', 'advtge'
-                    ])) and not next_line.startswith('$') and not next_line.startswith('-$') and
+                        'blue', 'equity', 'ready', 'advtge', 'lal'
+                    ]) or
+                    # Special pattern for provider-specific account identifiers (like MorganStanley-LAL)
+                    (any(prov in next_line for prov in ['MorganStanley', 'CharlesSwab', 'Fidelity']) and '-' in next_line)) and
+                    not next_line.startswith('$') and not next_line.startswith('-$') and
                     next_line not in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
                                     '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
                                     'Line Of Credit', 'Cryptocurrency']):
@@ -695,6 +742,7 @@ def extract_net_worth_data(text_content):
         current_property = {}
         looking_for_amount = False
         looking_for_address = False
+        lines_since_home = 0  # Track how many lines since we saw "Home"
 
         while i < section_end:
             line = lines[i].strip()
@@ -702,6 +750,8 @@ def extract_net_worth_data(text_content):
             # Skip empty lines
             if not line:
                 i += 1
+                if looking_for_amount:
+                    lines_since_home += 1
                 continue
 
             # Look for property type indicators
@@ -722,12 +772,14 @@ def extract_net_worth_data(text_content):
                 current_property = {'name': line, 'type': 'Property'}
                 looking_for_amount = True
                 looking_for_address = False
+                lines_since_home = 0
 
-            # Look for dollar amounts (property values)
-            elif looking_for_amount and line.startswith('$') and ',' in line and '.' in line:
+            # Look for dollar amounts (property values) - but only within 20 lines of "Home"
+            elif looking_for_amount and line.startswith('$') and ',' in line and '.' in line and lines_since_home < 20:
                 current_property['amount'] = line.replace('$', '').replace(',', '')
                 looking_for_amount = False
                 looking_for_address = True
+                lines_since_home = 0
 
             # Look for property address (specific street address pattern)
             elif looking_for_address and any(word in line for word in ['Ct', 'St', 'Ave', 'Dr', 'Ln', 'Rd', 'Way']) and any(c.isdigit() for c in line):
@@ -737,10 +789,21 @@ def extract_net_worth_data(text_content):
             # Look for dates
             elif '/' in line and ('2024' in line or '2025' in line):
                 current_property['date'] = line
+                # If we've been looking for an amount and found a date instead, this property likely has no value
+                if looking_for_amount:
+                    looking_for_amount = False
 
             # Stop if we hit the structured section or another major section
             elif line in ['Account', 'Type', 'Balance'] or (line in ['Cash', 'Investment', 'Credit', 'Loan', 'Mortgage']):
                 break
+
+            # If looking for amount for too long without finding one, give up on this property
+            if looking_for_amount:
+                lines_since_home += 1
+                if lines_since_home > 20:
+                    # This property doesn't have a value, reset
+                    current_property = {}
+                    looking_for_amount = False
 
             i += 1
 
@@ -757,25 +820,29 @@ def extract_net_worth_data(text_content):
 
     # Find the actual total net worth from the text (more accurate than summing individual accounts)
     actual_total = None
-    total_pattern = r'\$([0-9,]+\.?\d*)'
 
-    # Look for the net worth total in the text - it appears near "ALL ACCOUNTS" section
-    lines_text = '\n'.join(lines)
-
-    # Search for patterns like "$10,359,346.21" that appear as the main total
+    # Look for the net worth total in a specific location - after "ALL ACCOUNTS" and before "1-DAY CHANGE"
     import re
-    matches = re.findall(r'\$([0-9,]+\.[0-9]{2})', lines_text)
 
-    # Find the largest amount which is likely the total net worth
-    largest_amount = 0
-    for match in matches:
-        try:
-            amount = float(match.replace(',', ''))
-            if amount > largest_amount and amount > 1000000:  # Must be > 1M to be total net worth
-                largest_amount = amount
-                actual_total = amount
-        except:
-            continue
+    # Find the "ALL ACCOUNTS" section
+    all_accounts_idx = -1
+    for i, line in enumerate(lines):
+        if 'ALL ACCOUNTS' in line:
+            all_accounts_idx = i
+            break
+
+    if all_accounts_idx != -1:
+        # Search for the total in the next 20 lines after "ALL ACCOUNTS"
+        search_range = lines[all_accounts_idx:min(len(lines), all_accounts_idx + 20)]
+        for line in search_range:
+            # Look for a dollar amount with format $X,XXX,XXX.XX
+            match = re.match(r'\$([0-9,]+\.[0-9]{2})$', line.strip())
+            if match:
+                try:
+                    actual_total = float(match.group(1).replace(',', ''))
+                    break
+                except:
+                    continue
 
     # Use actual total if found, otherwise calculate from accounts
     if actual_total:
@@ -802,13 +869,16 @@ def extract_net_worth_data(text_content):
 
     # Second pass: Look for accounts in alternative format (provider on separate line)
     # This catches accounts like Brex Card Account that appear later in the file
+    # Also handles patterns like "MorganStanley" followed by indented "MorganStanley-LAL"
     i = 0
     while i < len(lines):
         line = lines[i].strip()
 
         # Look for standalone provider names (exact match, case-sensitive)
-        if line in ['Brex', 'Chase', 'American Express', 'Wells Fargo', 'Fidelity', 'Morgan Stanley', 'Bluevine', 'Webull', 'Coinbase', 'Apple Federal Credit Union']:
+        if line in ['Brex', 'Chase', 'American Express', 'Wells Fargo', 'Fidelity', 'Morgan Stanley', 'Bluevine', 'Webull', 'Coinbase', 'Apple Federal Credit Union', 'MorganStanley']:
             provider = line
+            if provider == 'MorganStanley':
+                provider = 'Morgan Stanley'  # Normalize provider name
 
             # Look ahead for account details in the next few lines
             j = i + 1
@@ -826,17 +896,23 @@ def extract_net_worth_data(text_content):
                     continue
 
                 # Stop if we encounter another provider (avoid cross-contamination)
-                if next_line in ['Brex', 'Chase', 'American Express', 'Wells Fargo', 'Fidelity', 'Morgan Stanley', 'Bluevine', 'Webull', 'Coinbase', 'Apple Federal Credit Union'] and next_line != provider:
+                if next_line in ['Brex', 'Chase', 'American Express', 'Wells Fargo', 'Fidelity', 'Morgan Stanley', 'Bluevine', 'Webull', 'Coinbase', 'Apple Federal Credit Union', 'MorganStanley'] and next_line != line:
                     break
 
-                # Look for indented account name (has significant leading spaces)
+                # Look for indented account name or identifier (has significant leading spaces)
+                # Special handling for provider-specific patterns like "MorganStanley-LAL"
                 if (len(current_line) > len(next_line) and len(current_line) >= 14 and
                     current_line.startswith('              ') and next_line and
                     not next_line.startswith('$') and not next_line.startswith('-$') and
                     next_line not in ['Checking', 'Savings', 'Investment', 'IRA Traditional', 'IRA SEP',
                                     '401k Traditional', 'Personal', 'Line of Credit', 'Mortgage', 'Assets',
                                     'Cryptocurrency']):
-                    account_name = next_line
+                    # Special case: if this looks like a provider-specific account identifier (e.g., MorganStanley-LAL)
+                    # use it as the account name
+                    if any(provider_name in next_line for provider_name in ['MorganStanley', 'CharlesSchwab', 'Fidelity']) and '-' in next_line:
+                        account_name = next_line
+                    else:
+                        account_name = next_line
                     j += 1
                     continue
 
@@ -964,7 +1040,7 @@ def extract_net_worth_data(text_content):
                     'Apple Federal Credit Union', 'Charles Schwab', 'Fidelity', 'Morgan Stanley', 'M1 Finance',
                     'Manual Investment Holdings', 'Wells Fargo', 'Chase', 'American Express', 'Brex',
                     'E*TRADE', 'T-RowePrice Manual Holdings', 'Bluevine', 'Webull', 'Coinbase', 'Truist',
-                    'MorganStanley', 'Manual', 'Cyber Connective Corporation'
+                    'MorganStanley', 'Manual', 'Cyber Connective Corporation', 'Rocket Mortgage'
                 ]) and provider and next_line != provider:
                     break
 
@@ -1070,25 +1146,29 @@ def extract_net_worth_data(text_content):
 
     # Find the actual total net worth from the text (more accurate than summing individual accounts)
     actual_total = None
-    total_pattern = r'\$([0-9,]+\.?\d*)'
 
-    # Look for the net worth total in the text - it appears near "ALL ACCOUNTS" section
-    lines_text = '\n'.join(lines)
-
-    # Search for patterns like "$10,359,346.21" that appear as the main total
+    # Look for the net worth total in a specific location - after "ALL ACCOUNTS" and before "1-DAY CHANGE"
     import re
-    matches = re.findall(r'\$([0-9,]+\.[0-9]{2})', lines_text)
 
-    # Find the largest amount which is likely the total net worth
-    largest_amount = 0
-    for match in matches:
-        try:
-            amount = float(match.replace(',', ''))
-            if amount > largest_amount and amount > 1000000:  # Must be > 1M to be total net worth
-                largest_amount = amount
-                actual_total = amount
-        except:
-            continue
+    # Find the "ALL ACCOUNTS" section
+    all_accounts_idx = -1
+    for i, line in enumerate(lines):
+        if 'ALL ACCOUNTS' in line:
+            all_accounts_idx = i
+            break
+
+    if all_accounts_idx != -1:
+        # Search for the total in the next 20 lines after "ALL ACCOUNTS"
+        search_range = lines[all_accounts_idx:min(len(lines), all_accounts_idx + 20)]
+        for line in search_range:
+            # Look for a dollar amount with format $X,XXX,XXX.XX
+            match = re.match(r'\$([0-9,]+\.[0-9]{2})$', line.strip())
+            if match:
+                try:
+                    actual_total = float(match.group(1).replace(',', ''))
+                    break
+                except:
+                    continue
 
     # Use actual total if found, otherwise calculate from accounts
     if actual_total:
