@@ -64,6 +64,10 @@ import uuid
 import time
 import datetime
 import traceback
+from urllib.parse import quote_plus, unquote_plus
+import urllib.request
+import urllib.error
+import yfinance as yf
 
 # Add this import at the top of the file with the other imports
 import plotly.express as px
@@ -71,6 +75,7 @@ import plotly.express as px
 # Add these imports at the top of the file with other imports
 import plotly.graph_objects as go
 import numpy as np
+import streamlit.components.v1 as components
 
 # Import functions from both the webarchive and mhtml modules
 from read_empower_webarchive import (
@@ -141,7 +146,25 @@ def process_networth_json(file_path):
 
                 return structured_data
             else:
-                return "Could not find networthHistories in JSON structure"
+                # Provide diagnostic information about what was found
+                error_msg = "Could not find networthHistories in JSON structure."
+                if 'spData' in data:
+                    available_keys = list(data['spData'].keys())
+                    error_msg += f" Found these keys in spData: {', '.join(available_keys)}."
+
+                    # Check if it's a transactions file
+                    if 'transactions' in data['spData']:
+                        error_msg += " This appears to be a TRANSACTIONS export, not a networth history export."
+                    # Check if it's an account summaries file
+                    elif 'accountSummaries' in data['spData']:
+                        num_accounts = len(data['spData']['accountSummaries'])
+                        error_msg += f" This appears to be an ACCOUNT SUMMARIES export (snapshot of {num_accounts} accounts), not a networth HISTORY timeline export. Please export the 'Net Worth Over Time' data from Empower instead."
+                    else:
+                        error_msg += " This does not appear to be a recognized Empower export format for networth history."
+                else:
+                    error_msg += " 'spData' key not found in JSON."
+
+                return error_msg
 
         except json.JSONDecodeError:
             # Fallback to regex approach for malformed JSON
@@ -184,6 +207,223 @@ def process_networth_json(file_path):
 
     except Exception as e:
         return f"Error processing JSON file: {str(e)}"
+
+def process_holdings_json(file_path):
+    """Process a JSON file containing portfolio holdings data and return structured data"""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        # Look for holdings in the parsed data
+        if 'spData' in data and 'holdings' in data['spData']:
+            holdings = data['spData']['holdings']
+            total_value = data['spData'].get('holdingsTotalValue', 0.0)
+
+            # Structure holdings data to match the format from webarchive/mhtml
+            structured_data = []
+            for holding in holdings:
+                # Calculate 1 day % change if not present
+                one_day_pct = holding.get('oneDayPercentChange', 0.0)
+
+                ticker = holding.get('ticker', holding.get('originalTicker', ''))
+                description = holding.get('description', holding.get('originalDescription', ''))
+                # Cash entries have no ticker in Empower's data; assign "CASH" so the CSV column is populated
+                if not ticker and (holding.get('holdingType', '') == 'Cash' or description == 'Cash'):
+                    ticker = 'CASH'
+                structured_data.append({
+                    'Ticker': ticker,
+                    'Name': description,
+                    'Shares': holding.get('quantity', 0.0),
+                    'Price': holding.get('price', 0.0),
+                    'Change': holding.get('change', 0.0),
+                    '1 Day %': f"{one_day_pct:.2f}%",
+                    '1 day $': holding.get('oneDayValueChange', 0.0),
+                    'Value': holding.get('value', 0.0),
+                    'Type': holding.get('type', holding.get('holdingType', '')),
+                    'Account': holding.get('accountName', ''),
+                    'CUSIP': holding.get('cusip', ''),
+                    'Cost Basis': holding.get('costBasis', 0.0),
+                    'Exchange': holding.get('exchange', ''),
+                    'Category': holding.get('type', holding.get('holdingType', ''))  # Using type as category
+                })
+
+            return {
+                'holdings': structured_data,
+                'total_value': total_value,
+                'count': len(structured_data)
+            }
+        else:
+            # Provide diagnostic information
+            error_msg = "Could not find holdings in JSON structure."
+            if 'spData' in data:
+                available_keys = list(data['spData'].keys())
+                error_msg += f" Found these keys in spData: {', '.join(available_keys)}."
+            else:
+                error_msg += " 'spData' key not found in JSON."
+
+            return error_msg
+
+    except json.JSONDecodeError as e:
+        return f"JSON parsing error: {str(e)}"
+    except Exception as e:
+        return f"Error processing holdings JSON file: {str(e)}"
+
+def consolidate_holdings(holdings_data):
+    """Consolidate holdings with the same ticker/name across multiple accounts"""
+    if isinstance(holdings_data, str):
+        return holdings_data
+
+    if not isinstance(holdings_data, dict) or 'holdings' not in holdings_data:
+        return holdings_data
+
+    holdings = holdings_data['holdings']
+    consolidated = {}
+
+    # Group holdings by ticker (or name if ticker is empty)
+    for holding in holdings:
+        ticker = holding.get('Ticker', '').strip()
+        name = holding.get('Name', '').strip()
+
+        # Use ticker as key, or name if ticker is empty
+        key = ticker if ticker else name
+
+        # Create a unique key combining ticker and name for better matching
+        # (handles cases where ticker might be empty or name variations)
+        if not key:
+            key = name
+
+        if key not in consolidated:
+            # First occurrence - initialize
+            consolidated[key] = {
+                'Ticker': ticker,
+                'Name': name,
+                'Shares': holding.get('Shares', 0.0),
+                'Price': holding.get('Price', 0.0),
+                'Change': holding.get('Change', 0.0),
+                '1 Day %': holding.get('1 Day %', '0.00%'),
+                '1 day $': holding.get('1 day $', 0.0),
+                'Value': holding.get('Value', 0.0),
+                'Type': holding.get('Type', ''),
+                'Account': holding.get('Account', ''),
+                'CUSIP': holding.get('CUSIP', ''),
+                'Cost Basis': holding.get('Cost Basis', 0.0),
+                'Exchange': holding.get('Exchange', ''),
+                'Category': holding.get('Category', ''),
+                '_accounts': [holding.get('Account', '')],  # Track all accounts
+                '_value_for_price_calc': holding.get('Value', 0.0)  # For weighted avg
+            }
+        else:
+            # Consolidate with existing entry
+            existing = consolidated[key]
+
+            # Sum quantities and values
+            existing['Shares'] += holding.get('Shares', 0.0)
+            existing['Value'] += holding.get('Value', 0.0)
+            existing['1 day $'] += holding.get('1 day $', 0.0)
+            existing['Cost Basis'] += holding.get('Cost Basis', 0.0)
+
+            # Track value for weighted average price calculation
+            existing['_value_for_price_calc'] += holding.get('Value', 0.0)
+
+            # Collect accounts
+            account = holding.get('Account', '')
+            if account and account not in existing['_accounts']:
+                existing['_accounts'].append(account)
+
+    # Post-process consolidated holdings
+    consolidated_list = []
+    for key, holding in consolidated.items():
+        # Calculate weighted average price (total value / total shares)
+        if holding['Shares'] > 0:
+            holding['Price'] = holding['Value'] / holding['Shares']
+
+        # Calculate percentage change if we have the day $ and value
+        if holding['Value'] != 0:
+            day_pct = (holding['1 day $'] / (holding['Value'] - holding['1 day $'])) * 100
+            holding['1 Day %'] = f"{day_pct:.2f}%"
+
+        # Set account to "Multiple Accounts" if consolidated from multiple
+        if len(holding['_accounts']) > 1:
+            holding['Account'] = f"Multiple Accounts ({len(holding['_accounts'])})"
+        elif len(holding['_accounts']) == 1:
+            holding['Account'] = holding['_accounts'][0]
+
+        # Remove temporary fields
+        del holding['_accounts']
+        del holding['_value_for_price_calc']
+
+        consolidated_list.append(holding)
+
+    return {
+        'holdings': consolidated_list,
+        'total_value': holdings_data.get('total_value', 0.0),
+        'count': len(consolidated_list),
+        'original_count': len(holdings)
+    }
+
+def save_holdings_json_to_csv(holdings_data, csv_path):
+    """Save holdings data from JSON to CSV file"""
+    try:
+        if isinstance(holdings_data, dict) and 'holdings' in holdings_data:
+            df = pd.DataFrame(holdings_data['holdings'])
+            # Drop real-time-only columns from the saved CSV
+            df = df.drop(columns=[c for c in ["Change", "1 Day %", "1 day $"] if c in df.columns])
+            # Sort by Value in descending order
+            df = df.sort_values(by='Value', ascending=False)
+            # Reorder columns to put Name before Ticker
+            cols = df.columns.tolist()
+            if 'Name' in cols and 'Ticker' in cols:
+                # Move Name to the first position and Ticker to second
+                cols.remove('Name')
+                cols.remove('Ticker')
+                cols = ['Name', 'Ticker'] + cols
+                df = df[cols]
+            df.to_csv(csv_path, index=False)
+            return True
+        else:
+            print(f"Error: Invalid holdings data format")
+            return False
+    except Exception as e:
+        print(f"Error saving holdings to CSV: {str(e)}")
+        return False
+
+def format_holdings_json_as_text(holdings_data):
+    """Format holdings data from JSON as human-readable text"""
+    if isinstance(holdings_data, str):
+        return holdings_data
+
+    if not isinstance(holdings_data, dict) or 'holdings' not in holdings_data:
+        return "No holdings data available"
+
+    holdings = holdings_data['holdings']
+    total_value = holdings_data.get('total_value', 0.0)
+    count = holdings_data.get('count', len(holdings))
+
+    text = "PORTFOLIO HOLDINGS\n"
+    text += "==================\n\n"
+    text += f"Total Holdings: {count}\n"
+    text += f"Total Portfolio Value: ${total_value:,.2f}\n\n"
+
+    text += "HOLDINGS DETAIL:\n"
+    text += "-" * 120 + "\n"
+    text += f"{'Ticker':<10} {'Name':<35} {'Shares':<12} {'Price':<12} {'Value':<15} {'1 Day %':<10} {'Type':<10}\n"
+    text += "-" * 120 + "\n"
+
+    # Sort by value descending
+    sorted_holdings = sorted(holdings, key=lambda x: x.get('Value', 0), reverse=True)
+
+    for holding in sorted_holdings:
+        ticker = holding.get('Ticker', '')[:9]
+        name = holding.get('Name', '')[:34]
+        shares = holding.get('Shares', 0)
+        price = holding.get('Price', 0)
+        value = holding.get('Value', 0)
+        day_pct = holding.get('1 Day %', '0.00%')
+        htype = holding.get('Type', '')[:9]
+
+        text += f"{ticker:<10} {name:<35} {shares:<12.2f} ${price:<11.2f} ${value:<14,.2f} {day_pct:<10} {htype:<10}\n"
+
+    return text
 
 def save_networth_timeline_to_csv(networth_data, csv_path):
     """Save net worth timeline data to CSV file"""
@@ -541,8 +781,14 @@ def render_sidebar():
 
         st.markdown("""
         ### Instructions:
-        1. Upload your .webarchive or .mhtml file
-        2. Click Process and view the results
+        1. Upload your Empower file:
+           - **JSON** (easiest): use the **Site JSON Capture Exporter** Chrome extension
+             — navigate to the Empower page, click the extension, hit **Download**
+             - `Empower - holdings_getHoldings_*.json` – portfolio holdings
+             - `Empower - networth_getHistories_*.json` – net worth history
+             - `Empower - transactions_getUserTransactions_*.json` – transactions
+           - **Webarchive / MHTML**: save the Empower page directly from your browser
+        2. Click **Process File** and view the results
         """)
 
         # File upload section - now accepts .webarchive, .mhtml/.mht, and .json files
@@ -587,17 +833,42 @@ def determine_file_type(file_path):
         return None
 
 def determine_content_type(file_path):
-    """Determine if a file contains portfolio or net worth data based on filename"""
+    """Determine if a file contains portfolio or net worth data based on filename and content"""
     filename = os.path.basename(file_path).lower()
     _, extension = os.path.splitext(file_path)
     extension = extension.lower()
 
-    # JSON files are typically net worth data
+    # For JSON files, check filename and content
     if extension == '.json':
+        # Check filename for hints
+        if 'holdings' in filename or 'getholdings' in filename or 'portfolio' in filename:
+            return 'portfolio'
+        elif 'networth' in filename or 'net_worth' in filename:
+            return 'net_worth'
+        elif 'transaction' in filename:
+            return 'transactions'
+
+        # If unclear from filename, peek at the JSON structure
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            if 'spData' in data:
+                spdata_keys = data['spData'].keys()
+                if 'holdings' in spdata_keys:
+                    return 'portfolio'
+                elif 'networthHistories' in spdata_keys:
+                    return 'net_worth'
+                elif 'transactions' in spdata_keys:
+                    return 'transactions'
+        except:
+            pass  # If we can't read it, fall through to default logic
+
+        # Default for JSON is net worth for backward compatibility
         return 'net_worth'
     elif 'net worth' in filename or 'net_worth' in filename:
         return 'net_worth'
-    elif 'portfolio' in filename:
+    elif 'portfolio' in filename or 'holdings' in filename:
         return 'portfolio'
     else:
         # Default to portfolio for backward compatibility
@@ -711,8 +982,13 @@ def process_file(file_path, extract_portfolio=True, save_csv=True):
             # Extract portfolio holdings based on file type
             if file_type == 'webarchive':
                 holdings_data = extract_portfolio_holdings_wa(extracted_text)
-            else:  # mhtml
+            elif file_type == 'mhtml':
                 holdings_data = extract_portfolio_holdings_mht(extracted_text)
+            elif file_type == 'json':
+                holdings_data = process_holdings_json(file_path)
+                # Consolidate holdings with the same ticker/name
+                if isinstance(holdings_data, dict) and 'holdings' in holdings_data:
+                    holdings_data = consolidate_holdings(holdings_data)
 
             if isinstance(holdings_data, str) and holdings_data.startswith("Could not"):
                 return {
@@ -734,8 +1010,10 @@ def process_file(file_path, extract_portfolio=True, save_csv=True):
 
                 if file_type == 'webarchive':
                     save_holdings_to_csv_wa(holdings_data, csv_path)
-                else:  # mhtml
+                elif file_type == 'mhtml':
                     save_holdings_to_csv_mht(holdings_data, csv_path)
+                elif file_type == 'json':
+                    save_holdings_json_to_csv(holdings_data, csv_path)
 
                 # Create MorningStar CSV if possible (only for portfolio)
                 df = pd.read_csv(csv_path)
@@ -752,8 +1030,10 @@ def process_file(file_path, extract_portfolio=True, save_csv=True):
 
             if file_type == 'webarchive':
                 formatted_text = format_holdings_as_text_wa(holdings_data)
-            else:  # mhtml
+            elif file_type == 'mhtml':
                 formatted_text = format_holdings_as_text_mht(holdings_data)
+            elif file_type == 'json':
+                formatted_text = format_holdings_json_as_text(holdings_data)
 
             with open(text_path, "w", encoding="utf-8") as file:
                 file.write(formatted_text)
@@ -779,6 +1059,775 @@ def read_csv_to_dataframe(csv_path):
     except Exception as e:
         st.error(f"Error reading CSV file: {str(e)}")
         return None
+
+
+def normalize_realtime_quote_symbol(ticker, name=""):
+    """Map CSV ticker values to quote provider symbols."""
+    symbol = str(ticker or "").strip().upper()
+    holding_name = str(name or "").strip().lower()
+
+    if holding_name == "cash" or symbol in {"", "CASH", "CASH$"}:
+        return None
+
+    if symbol.endswith(".COIN"):
+        base_symbol = symbol.split(".", 1)[0]
+        return f"{base_symbol}-USD"
+
+    return symbol
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_performance_metrics(symbols):
+    """Fetch YTD, 1-Year, 3-Yr Ann, 5-Yr Ann, 10-Yr Ann returns for a tuple of symbols."""
+    import datetime as _dt
+    metrics = {}
+    sym_list = [s for s in dict.fromkeys(symbols) if s]
+    if not sym_list:
+        return metrics
+
+    today = _dt.date.today()
+
+    def _ann_return(series, years):
+        """Annualised return over `years` years using first/last close."""
+        cutoff = today - _dt.timedelta(days=int(years * 365.25))
+        sub = series[series.index.date >= cutoff]
+        if len(sub) < 2:
+            return None
+        start, end = float(sub.iloc[0]), float(sub.iloc[-1])
+        if start <= 0:
+            return None
+        total = end / start
+        return (total ** (1 / years) - 1) * 100
+
+    def _ytd_return(series):
+        jan1 = _dt.date(today.year, 1, 1)
+        sub = series[series.index.date >= jan1]
+        if len(sub) < 1:
+            # Fall back to first available price this year
+            sub = series
+        if len(sub) < 2:
+            return None
+        start, end = float(sub.iloc[0]), float(sub.iloc[-1])
+        if start <= 0:
+            return None
+        return (end / start - 1) * 100
+
+    try:
+        raw = yf.download(
+            sym_list,
+            period="10y",
+            interval="1mo",
+            auto_adjust=True,
+            progress=False,
+            threads=True,
+        )
+        close = raw["Close"] if "Close" in raw else raw
+
+        if hasattr(close, "columns"):
+            col_iter = [(sym, close[sym].dropna()) for sym in close.columns]
+        else:
+            col_iter = [(sym_list[0], close.dropna())]
+
+        for sym, series in col_iter:
+            if series.empty:
+                continue
+            metrics[sym] = {
+                "ytd":    _ytd_return(series),
+                "1y":     _ann_return(series, 1),
+                "3y":     _ann_return(series, 3),
+                "5y":     _ann_return(series, 5),
+                "10y":    _ann_return(series, 10),
+            }
+    except Exception:
+        pass
+
+    return metrics
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_realtime_quotes(symbols):
+    """Fetch real-time quotes for a list of symbols using yfinance."""
+    quote_data = {}
+    unique_symbols = [symbol for symbol in dict.fromkeys(symbols) if symbol]
+
+    if not unique_symbols:
+        return quote_data
+
+    try:
+        # Batch download last 2 days so we always have a previous-close for change calculation
+        raw = yf.download(
+            unique_symbols,
+            period="2d",
+            interval="1d",
+            auto_adjust=True,
+            progress=False,
+            threads=True,
+        )
+        close = raw["Close"] if "Close" in raw else raw
+
+        # Normalise to a dict: symbol -> latest close
+        if hasattr(close, "columns"):  # multi-symbol DataFrame
+            for sym in close.columns:
+                series = close[sym].dropna()
+                if len(series) >= 1:
+                    price = float(series.iloc[-1])
+                    prev  = float(series.iloc[-2]) if len(series) >= 2 else price
+                    change = price - prev
+                    change_pct = (change / prev * 100) if prev else 0.0
+                    quote_data[sym] = {
+                        "price": price,
+                        "change": change,
+                        "change_percent": change_pct,
+                    }
+        else:  # single-symbol Series
+            sym = unique_symbols[0]
+            series = close.dropna()
+            if len(series) >= 1:
+                price = float(series.iloc[-1])
+                prev  = float(series.iloc[-2]) if len(series) >= 2 else price
+                change = price - prev
+                change_pct = (change / prev * 100) if prev else 0.0
+                quote_data[sym] = {
+                    "price": price,
+                    "change": change,
+                    "change_percent": change_pct,
+                }
+    except Exception:
+        pass  # Return whatever was collected; caller handles missing symbols
+
+    return quote_data
+
+
+def build_realtime_holdings_dataframe(csv_path):
+    """Load a holdings CSV and update price-related columns with live quotes."""
+    df = read_csv_to_dataframe(csv_path)
+    if df is None or df.empty:
+        return None, {"updated_rows": 0, "quoted_symbols": 0, "missing_symbols": []}
+
+    original_columns = df.columns.tolist()
+
+    # Ensure real-time columns always exist (may be absent from saved CSV)
+    for _rt_col in ["Change", "1 day $"]:
+        if _rt_col not in df.columns:
+            df[_rt_col] = np.nan
+    if "1 Day %" not in df.columns:
+        df["1 Day %"] = ""  # string column, not float
+
+    for column in ["Shares", "Price", "Change", "1 day $", "Value", "Cost Basis"]:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    requested_symbols = []
+    row_quote_symbols = {}
+    for row_index, row in df.iterrows():
+        quote_symbol = normalize_realtime_quote_symbol(row.get("Ticker", ""), row.get("Name", ""))
+        row_quote_symbols[row_index] = quote_symbol
+        if quote_symbol:
+            requested_symbols.append(quote_symbol)
+
+    quotes = fetch_realtime_quotes(tuple(requested_symbols))
+    updated_rows = 0
+    missing_symbols = []
+
+    for row_index, quote_symbol in row_quote_symbols.items():
+        if not quote_symbol:
+            continue
+
+        quote = quotes.get(quote_symbol)
+        if not quote:
+            missing_symbols.append(str(df.at[row_index, "Ticker"]))
+            continue
+
+        shares = pd.to_numeric(df.at[row_index, "Shares"], errors="coerce") if "Shares" in df.columns else np.nan
+
+        if "Price" in df.columns:
+            df.at[row_index, "Price"] = quote["price"]
+        if "Change" in df.columns:
+            df.at[row_index, "Change"] = quote["change"]
+        if "1 Day %" in df.columns:
+            df.at[row_index, "1 Day %"] = f"{quote['change_percent']:.2f}%"
+        if "1 day $" in df.columns and not pd.isna(shares):
+            df.at[row_index, "1 day $"] = shares * quote["change"]
+        if "Value" in df.columns and not pd.isna(shares):
+            df.at[row_index, "Value"] = shares * quote["price"]
+
+        updated_rows += 1
+
+    if "Value" in df.columns:
+        df = df.sort_values(by="Value", ascending=False, na_position="last")
+
+    display_columns = [column for column in original_columns if column in df.columns]
+    # Append real-time columns that were injected but not in the original CSV
+    for _rt_col in ["Change", "1 Day %", "1 day $"]:
+        if _rt_col not in display_columns and _rt_col in df.columns:
+            display_columns.append(_rt_col)
+    return df[display_columns], {
+        "updated_rows": updated_rows,
+        "quoted_symbols": len(quotes),
+        "missing_symbols": sorted(set(symbol for symbol in missing_symbols if symbol and symbol != "nan")),
+    }
+
+
+def build_performance_excel(perf_df):
+    """Build and return a formatted Excel workbook as BytesIO for the performance report."""
+    import io as _io
+    buf = _io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        perf_df.to_excel(writer, index=False, sheet_name="Portfolio Performance")
+        wb = writer.book
+        ws = writer.sheets["Portfolio Performance"]
+        nrows = len(perf_df)
+
+        hdr_fmt = wb.add_format({
+            "bold": True, "bg_color": "#1A1A2E", "font_color": "#E0E0E0",
+            "border": 1, "align": "center", "valign": "vcenter", "text_wrap": True,
+        })
+        base = {"valign": "vcenter", "border": 1}
+        even_base = {**base, "bg_color": "#F0F4FA"}
+        odd_base  = {**base, "bg_color": "#FFFFFF"}
+        money_even = wb.add_format({**even_base, "num_format": "$#,##0.00"})
+        money_odd  = wb.add_format({**odd_base,  "num_format": "$#,##0.00"})
+        pct_even = wb.add_format({**even_base, "num_format": "0.00%"})
+        pct_odd  = wb.add_format({**odd_base,  "num_format": "0.00%"})
+        num_even = wb.add_format({**even_base, "num_format": "#,##0.000"})
+        num_odd  = wb.add_format({**odd_base,  "num_format": "#,##0.000"})
+        text_even = wb.add_format({**even_base})
+        text_odd  = wb.add_format({**odd_base})
+
+        COLS = list(perf_df.columns)
+        col_widths = {
+            "Symbol": 10, "Name": 34, "Shares": 10, "Price": 12, "Value": 14,
+            "Weight %": 9, "Day Chg $": 12, "Day Chg %": 10,
+            "YTD %": 9, "1-Year %": 9, "3-Yr Ann %": 10, "5-Yr Ann %": 10, "10-Yr Ann %": 11,
+        }
+        PCT_COLS   = {"Weight %", "Day Chg %", "YTD %", "1-Year %", "3-Yr Ann %", "5-Yr Ann %", "10-Yr Ann %"}
+        MONEY_COLS = {"Price", "Value", "Day Chg $"}
+        PERF_COLS  = {"Day Chg %", "YTD %", "1-Year %", "3-Yr Ann %", "5-Yr Ann %", "10-Yr Ann %"}
+
+        for ci, cname in enumerate(COLS):
+            ws.write(0, ci, cname, hdr_fmt)
+            ws.set_column(ci, ci, col_widths.get(cname, 12))
+
+        for ri, (_, drow) in enumerate(perf_df.iterrows()):
+            excel_row = ri + 1
+            is_even = (ri % 2 == 0)
+            for ci, cname in enumerate(COLS):
+                val = drow[cname]
+                is_none = val is None or (isinstance(val, float) and np.isnan(val))
+                if is_none:
+                    ws.write(excel_row, ci, "N/A", text_even if is_even else text_odd)
+                    continue
+                if cname in PCT_COLS:
+                    ws.write_number(excel_row, ci, val / 100.0, pct_even if is_even else pct_odd)
+                elif cname in MONEY_COLS:
+                    ws.write_number(excel_row, ci, float(val), money_even if is_even else money_odd)
+                elif cname == "Shares":
+                    ws.write_number(excel_row, ci, float(val), num_even if is_even else num_odd)
+                else:
+                    ws.write(excel_row, ci, val, text_even if is_even else text_odd)
+
+        for cname in PERF_COLS:
+            ci = COLS.index(cname)
+            cl = chr(ord('A') + ci)
+            rng = f"{cl}2:{cl}{nrows + 1}"
+            # Use formula-type so text cells ("N/A") are never matched
+            ws.conditional_format(rng, {"type": "formula",
+                "criteria": f"AND(ISNUMBER({cl}2),{cl}2<0)",
+                "format": wb.add_format({"bg_color": "#FADBD8", "font_color": "#C0392B", "bold": True, "num_format": "0.00%", "border": 1})})
+            ws.conditional_format(rng, {"type": "formula",
+                "criteria": f"AND(ISNUMBER({cl}2),{cl}2>0)",
+                "format": wb.add_format({"bg_color": "#D5F5E3", "font_color": "#1E8449", "bold": True, "num_format": "0.00%", "border": 1})})
+
+        ci_day = COLS.index("Day Chg $")
+        cl = chr(ord('A') + ci_day)
+        rng_day = f"{cl}2:{cl}{nrows+1}"
+        ws.conditional_format(rng_day, {"type": "formula",
+            "criteria": f"AND(ISNUMBER({cl}2),{cl}2<0)",
+            "format": wb.add_format({"bg_color": "#FADBD8", "font_color": "#C0392B", "bold": True, "num_format": "$#,##0.00", "border": 1})})
+        ws.conditional_format(rng_day, {"type": "formula",
+            "criteria": f"AND(ISNUMBER({cl}2),{cl}2>0)",
+            "format": wb.add_format({"bg_color": "#D5F5E3", "font_color": "#1E8449", "bold": True, "num_format": "$#,##0.00", "border": 1})})
+
+        ws.freeze_panes(1, 0)
+        ws.set_row(0, 28)
+        ws.set_zoom(110)
+    buf.seek(0)
+    return buf
+
+
+def render_performance_report_dashboard(report_file):
+    """Render the portfolio performance report in-page from a saved JSON file."""
+    import datetime as _dt3
+
+    st.title("📊 Portfolio Performance Report")
+    st.caption(f"Generated: {_dt3.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  |  Source: {os.path.basename(report_file)}")
+
+    if not os.path.exists(report_file):
+        st.error("Report data file not found. Please regenerate the report from the main page.")
+        return
+
+    perf_df = pd.read_json(report_file, orient="records")
+    if perf_df.empty:
+        st.warning("Report contains no data.")
+        return
+
+    PCT_COLS  = ["YTD %", "1-Year %", "3-Yr Ann %", "5-Yr Ann %", "10-Yr Ann %"]
+    PERF_COLS = PCT_COLS  # same set for colour styling
+
+    # ── Summary metrics ──────────────────────────────────────────────────────
+    total_value = pd.to_numeric(perf_df["Value"], errors="coerce").fillna(0).sum()
+    day_chg_total = pd.to_numeric(perf_df["Day Chg $"], errors="coerce").fillna(0).sum()
+    n_positive = sum(1 for v in pd.to_numeric(perf_df.get("YTD %", []), errors="coerce") if v and v > 0)
+    n_negative = sum(1 for v in pd.to_numeric(perf_df.get("YTD %", []), errors="coerce") if v and v < 0)
+
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("Portfolio Value", f"${total_value:,.2f}")
+    sc2.metric("Today's Change", f"${day_chg_total:,.2f}", delta=f"${day_chg_total:,.2f}")
+    sc3.metric("YTD Positive", f"{n_positive} symbols")
+    sc4.metric("YTD Negative", f"{n_negative} symbols")
+
+    st.divider()
+
+    # ── Styled table ─────────────────────────────────────────────────────────
+    def _colour_pct(val):
+        try:
+            v = float(val)
+            if v < 0:
+                return "background-color: #FADBD8; color: #C0392B; font-weight: bold"
+            elif v > 0:
+                return "background-color: #D5F5E3; color: #1E8449; font-weight: bold"
+        except (TypeError, ValueError):
+            pass
+        return ""
+
+    def _colour_dollar(val):
+        try:
+            v = float(val)
+            if v < 0:
+                return "color: #C0392B; font-weight: bold"
+            elif v > 0:
+                return "color: #1E8449; font-weight: bold"
+        except (TypeError, ValueError):
+            pass
+        return ""
+
+    # Build display copy with formatted strings for non-numeric presentation
+    disp = perf_df.copy()
+    for c in ["Price", "Value"]:
+        if c in disp.columns:
+            disp[c] = pd.to_numeric(disp[c], errors="coerce").map(lambda x: f"${x:,.2f}" if pd.notna(x) else "N/A")
+    if "Day Chg $" in disp.columns:
+        disp["Day Chg $"] = pd.to_numeric(disp["Day Chg $"], errors="coerce").map(lambda x: f"${x:,.2f}" if pd.notna(x) else "N/A")
+    if "Day Chg %" in disp.columns:
+        disp["Day Chg %"] = pd.to_numeric(disp["Day Chg %"], errors="coerce").map(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
+    if "Shares" in disp.columns:
+        disp["Shares"] = pd.to_numeric(disp["Shares"], errors="coerce").map(lambda x: f"{x:,.3f}" if pd.notna(x) else "N/A")
+    if "Weight %" in disp.columns:
+        disp["Weight %"] = pd.to_numeric(disp["Weight %"], errors="coerce").map(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
+    for c in PERF_COLS:
+        if c in disp.columns:
+            disp[c] = pd.to_numeric(disp[c], errors="coerce").map(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
+
+    style = disp.style
+    for c in PERF_COLS:
+        if c in disp.columns:
+            style = style.map(_colour_pct, subset=[c])
+    if "Day Chg $" in disp.columns:
+        style = style.map(_colour_dollar, subset=["Day Chg $"])
+    if "Day Chg %" in disp.columns:
+        style = style.map(_colour_pct, subset=["Day Chg %"])
+
+    st.dataframe(style, hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # ── Excel download ────────────────────────────────────────────────────────
+    excel_buf = build_performance_excel(perf_df)
+    fname = f"portfolio_performance_{_dt3.date.today().isoformat()}.xlsx"
+    st.download_button(
+        label="⬇️ Download Excel Report",
+        data=excel_buf,
+        file_name=fname,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="perf_report_excel_dl",
+    )
+
+
+def render_portfolio_analysis(df, is_realtime=False):
+    """Render the full portfolio analysis (table, statistics, charts) for a given holdings DataFrame."""
+    btn_key_suffix = "_rt" if is_realtime else ""
+
+    st.header("Portfolio Holdings")
+    REALTIME_ONLY_COLS = ["Change", "1 Day %", "1 day $"]
+    currency_cols = {
+        col: st.column_config.NumberColumn(col, format="$%,.2f")
+        for col in ["Price", "Change", "1 day $", "Value", "Cost Basis"]
+        if col in df.columns
+    }
+    if is_realtime:
+        display_df = df
+    else:
+        display_df = df.drop(columns=[c for c in REALTIME_ONLY_COLS if c in df.columns])
+    st.dataframe(display_df, hide_index=True, column_config=currency_cols)
+
+    # --- Performance Report Download ---
+    if st.button("Generate Portfolio Performance Report", key=f"perf_report_btn{btn_key_suffix}"):
+        with st.spinner("Fetching performance metrics (this may take a moment)..."):
+            ticker_col = "Ticker" if "Ticker" in df.columns else None
+            name_col = "Name" if "Name" in df.columns else None
+            total_val = pd.to_numeric(df["Value"], errors="coerce").fillna(0).sum() if "Value" in df.columns else 0
+
+            sym_map = {}  # row_index -> yahoo_symbol
+            for idx, row in df.iterrows():
+                t = str(row.get(ticker_col, "") if ticker_col else "").strip()
+                n = str(row.get(name_col, "") if name_col else "").strip()
+                sym = normalize_realtime_quote_symbol(t, n)
+                sym_map[idx] = sym
+
+            unique_syms = tuple(s for s in dict.fromkeys(sym_map.values()) if s)
+            quotes = fetch_realtime_quotes(unique_syms)
+            perf   = fetch_performance_metrics(unique_syms)
+
+            rows = []
+            for idx, row in df.iterrows():
+                sym = sym_map.get(idx)
+                q = quotes.get(sym, {}) if sym else {}
+                p = perf.get(sym, {}) if sym else {}
+
+                price  = q.get("price") or (pd.to_numeric(row.get("Price", None), errors="coerce") if "Price" in df.columns else None)
+                shares = pd.to_numeric(row.get("Shares", None), errors="coerce") if "Shares" in df.columns else None
+                value  = (shares * price) if (shares and price) else (pd.to_numeric(row.get("Value", None), errors="coerce") if "Value" in df.columns else None)
+                weight = (value / total_val * 100) if (value and total_val) else None
+                day_chg = (shares * q["change"]) if (shares and "change" in q) else None
+                day_chg_pct = q.get("change_percent") if q else None
+
+                rows.append({
+                    "Symbol":    str(row.get(ticker_col, "") if ticker_col else ""),
+                    "Name":      str(row.get(name_col, "") if name_col else ""),
+                    "Shares":    shares,
+                    "Price":     price,
+                    "Value":     value,
+                    "Weight %":  weight,
+                    "Day Chg $": day_chg,
+                    "Day Chg %": day_chg_pct,
+                    "YTD %":     p.get("ytd"),
+                    "1-Year %":  p.get("1y"),
+                    "3-Yr Ann %": p.get("3y"),
+                    "5-Yr Ann %": p.get("5y"),
+                    "10-Yr Ann %": p.get("10y"),
+                })
+
+            perf_df = pd.DataFrame(rows)
+            # Save report data to a temp JSON in the user dir
+            user_dir = ensure_user_dirs()
+            import datetime as _dt2
+            report_file = os.path.join(user_dir, f"perf_report_{_dt2.date.today().isoformat()}.json")
+            perf_df.to_json(report_file, orient="records")
+
+        report_url = f"?report=1&report_file={quote_plus(report_file)}"
+        st.markdown(
+            f'<a href="{report_url}" target="_blank" style="display:inline-block;padding:8px 16px;'
+            f'background:#1A6B3C;color:white;border-radius:6px;text-decoration:none;font-weight:bold;">'
+            f'📊 Open Performance Report ↗</a>',
+            unsafe_allow_html=True,
+        )
+
+    # --- LLM Portfolio Review Button ---
+    st.subheader("Portfolio Review by AI")
+    stats = calculate_portfolio_statistics(df)
+    if st.button("Ask AI for Portfolio Insights", key=f"llm_review_btn{btn_key_suffix}"):
+        with st.spinner("AI is reviewing your portfolio..."):
+            llm_prompt = (
+                "You are a financial portfolio expert. "
+                "Review the following portfolio holdings and statistics. "
+                "Provide a concise, actionable assessment of the portfolio's quality, diversification, risks, and suggest improvements. "
+                "Here is the data:\n\n"
+                f"Holdings (top 10):\n{df.head(10).to_string(index=False)}\n\n"
+                f"Portfolio statistics:\n{stats}\n"
+            )
+            system_message = (
+                "You are a helpful assistant that provides expert financial portfolio analysis. "
+                "Be concise, actionable, and clear for a general audience."
+            )
+            llm_response = send_query_to_llm(
+                query=llm_prompt,
+                system_message=system_message
+            )
+            st.success("AI Portfolio Review:")
+            st.write(llm_response)
+
+    # Portfolio statistics section
+    st.header("Portfolio Statistics")
+    stats = calculate_portfolio_statistics(df)
+
+    if 'error' in stats:
+        st.error(stats['error'])
+        st.write("Available columns in the dataframe:", df.columns.tolist())
+        if 'traceback' in stats:
+            with st.expander("Error details"):
+                st.code(stats['traceback'])
+    else:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("Summary Statistics")
+            metrics_col1, metrics_col2 = st.columns(2)
+
+            with metrics_col1:
+                st.metric(label="Total Value", value=f"${stats['total_value']:,.2f}")
+                st.metric(label="Holdings Count", value=stats['count'])
+                st.metric(label="Average Value", value=f"${stats['avg_value']:,.2f}")
+                st.metric(label="Median Value", value=f"${stats['median_value']:,.2f}")
+
+            with metrics_col2:
+                st.metric(label="Largest Holding", value=f"${stats['max_value']:,.2f}")
+                st.metric(label="Smallest Holding", value=f"${stats['min_value']:,.2f}")
+                st.metric(label="Value Range", value=f"${stats['value_range']:,.2f}")
+                st.metric(label="Standard Deviation", value=f"${stats['std_dev']:,.2f}")
+
+            st.subheader("Portfolio Concentration")
+            metrics_col3, metrics_col4 = st.columns(2)
+
+            with metrics_col3:
+                st.metric(label="Top 5 Holdings", value=f"{stats['top_5_pct']:.2f}%")
+                st.metric(label="HHI Score", value=f"{stats['hhi']:.2f}")
+
+            with metrics_col4:
+                st.metric(label="Top 10 Holdings", value=f"{stats['top_10_pct']:.2f}%")
+                st.metric(label="Concentration", value=stats['concentration'])
+
+        if 'asset_allocation' in stats and not stats['asset_allocation'].empty:
+            with st.expander("Asset Allocation", expanded=True):
+                asset_data = stats['asset_allocation']
+                st.bar_chart(asset_data.set_index('Category')['pct_of_total'])
+                st.dataframe(
+                    asset_data[['Category', 'pct_of_total']].rename(
+                        columns={'pct_of_total': '% of Portfolio'}
+                    ).reset_index(drop=True),
+                    hide_index=True
+                )
+
+        with col2:
+            st.subheader("Top Holdings")
+            top_data = stats['holdings_pct'].head(10)
+            others_sum = stats['holdings_pct'].iloc[10:]['pct_of_total'].sum() if len(stats['holdings_pct']) > 10 else 0
+
+            if others_sum > 0:
+                others_row = pd.DataFrame({
+                    'Symbol': ['OTHER'],
+                    'Name': ['Other Holdings'],
+                    'Value_numeric': [others_sum / 100 * stats['total_value']],
+                    'pct_of_total': [others_sum]
+                })
+                display_data = pd.concat([top_data, others_row])
+            else:
+                display_data = top_data
+
+            st.dataframe(
+                display_data[['Name', 'Symbol', 'pct_of_total']].rename(
+                    columns={'pct_of_total': '% of Portfolio'}
+                ).reset_index(drop=True),
+                hide_index=True,
+                height=420
+            )
+
+        st.header("Portfolio Visualizations")
+        tabs = st.tabs(["Holdings Treemap", "Top 10 Bar Chart", "Value Distribution", "Portfolio Concentration"])
+
+        with tabs[0]:
+            treemap_data = display_data.copy()
+            fig_treemap = px.treemap(
+                treemap_data,
+                path=['Symbol'],
+                values='pct_of_total',
+                color='Value_numeric',
+                color_continuous_scale='Viridis',
+                hover_data=['Name', 'Value_numeric'],
+                title='Portfolio Holdings Treemap'
+            )
+            fig_treemap.update_layout(height=600, margin=dict(t=50, l=25, r=25, b=25))
+            st.plotly_chart(fig_treemap, width='stretch')
+            st.caption("Treemap visualization shows each holding sized by percentage of portfolio with color intensity based on value.")
+
+        with tabs[1]:
+            top10_data = stats['holdings_pct'].head(10).copy()
+            top10_data = top10_data.sort_values('pct_of_total')
+            fig_bar = go.Figure(go.Bar(
+                x=top10_data['pct_of_total'],
+                y=top10_data['Name'] + " (" + top10_data['Symbol'] + ")",
+                orientation='h',
+                marker=dict(color=top10_data['pct_of_total'], colorscale='Viridis'),
+                text=[f"${v:,.2f}" for v in top10_data['Value_numeric']],
+                textposition='auto'
+            ))
+            fig_bar.update_layout(
+                title='Top 10 Holdings by Portfolio Percentage',
+                xaxis_title='Percentage of Portfolio',
+                yaxis_title='Holdings',
+                height=500,
+                margin=dict(l=250, r=50)
+            )
+            st.plotly_chart(fig_bar, width='stretch')
+
+        with tabs[2]:
+            q1 = np.percentile(df['Value_numeric'], 25)
+            q3 = np.percentile(df['Value_numeric'], 75)
+            iqr = q3 - q1
+            upper_bound = q3 + 2.5 * iqr
+            filtered_values = df[df['Value_numeric'] <= upper_bound]['Value_numeric']
+            fig_hist = px.histogram(
+                filtered_values,
+                nbins=20,
+                title='Distribution of Holding Values',
+                labels={'value': 'Holding Value ($)', 'count': 'Number of Holdings'},
+                color_discrete_sequence=['lightblue'],
+            )
+            fig_hist.update_layout(showlegend=False, height=500)
+            st.plotly_chart(fig_hist, width='stretch')
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Mean Value", f"${stats['avg_value']:,.2f}")
+            c2.metric("Median Value", f"${stats['median_value']:,.2f}")
+            c3.metric("Standard Deviation", f"${stats['std_dev']:,.2f}")
+            if upper_bound < stats['max_value']:
+                st.info(f"Note: Some holdings with values greater than ${upper_bound:,.2f} were excluded from the histogram for better visualization.")
+
+        with tabs[3]:
+            lorenz_data = stats['holdings_pct'].copy().sort_values('Value_numeric')
+            lorenz_data['cumulative_pct'] = lorenz_data['Value_numeric'].cumsum() / stats['total_value'] * 100
+            lorenz_data['holding_pct'] = 100 * (np.arange(1, len(lorenz_data) + 1) / len(lorenz_data))
+
+            fig_lorenz = go.Figure()
+            fig_lorenz.add_trace(go.Scatter(x=[0, 100], y=[0, 100], mode='lines', name='Perfect Equality', line=dict(color='black', dash='dash')))
+            fig_lorenz.add_trace(go.Scatter(
+                x=lorenz_data['holding_pct'].tolist(),
+                y=lorenz_data['cumulative_pct'].tolist(),
+                mode='lines',
+                name='Portfolio Distribution',
+                fill='tozeroy',
+                line=dict(color='blue')
+            ))
+            fig_lorenz.update_layout(
+                title='Portfolio Concentration Analysis (Lorenz Curve)',
+                xaxis_title='Cumulative % of Holdings',
+                yaxis_title='Cumulative % of Portfolio Value',
+                height=500
+            )
+            st.plotly_chart(fig_lorenz, width='stretch')
+            st.caption("""
+            **Interpreting the Lorenz Curve:**
+            - The diagonal line represents perfect equality (all holdings have equal value)
+            - The curve shows actual distribution of your portfolio
+            - The greater the distance between the curve and diagonal, the more concentrated your portfolio
+            - A concentrated portfolio may have higher risk due to lack of diversification
+            """)
+
+            if len(lorenz_data) > 5:
+                x = lorenz_data['holding_pct'].values / 100
+                y = lorenz_data['cumulative_pct'].values / 100
+                x = np.insert(x, 0, 0)
+                y = np.insert(y, 0, 0)
+                B = np.trapezoid(y, x)
+                gini = 1 - 2 * B
+                st.metric("Portfolio Gini Coefficient", f"{gini:.2f}", help="Measures inequality in your portfolio. Values range from 0 (perfect equality) to 1 (perfect inequality).")
+                if gini < 0.2:
+                    concentration = "Very Low"
+                elif gini < 0.4:
+                    concentration = "Low"
+                elif gini < 0.6:
+                    concentration = "Moderate"
+                elif gini < 0.8:
+                    concentration = "High"
+                else:
+                    concentration = "Very High"
+                st.info(f"Your portfolio has a **{concentration}** concentration level based on the Gini coefficient.")
+                st.markdown("""
+                ### 📘 Understanding Gini vs HHI
+
+                **Gini Coefficient**
+                - Measures overall *inequality* in your portfolio.
+                - Sensitive to **all holdings**, including small ones.
+                - A high Gini (close to 1) means a few holdings make up most of the portfolio, with many very small ones.
+
+                **HHI (Herfindahl-Hirschman Index)**
+                - Measures *concentration* using squared percentage weights.
+                - Focuses more on **large holdings**.
+                - A low HHI means no single holding dominates—even if many others are small.
+
+                🧠 **Why they can differ:**
+                You might have a few large holdings and many tiny ones.
+                Gini will say "high inequality", while HHI might still say "low concentration".
+
+                Both are useful — Gini shows diversification risk; HHI shows exposure to dominant assets.
+                """)
+
+        if 'asset_allocation' in stats and not stats['asset_allocation'].empty:
+            st.header("Asset Allocation")
+            asset_data = stats['asset_allocation']
+            fig_asset = px.pie(
+                asset_data,
+                values='pct_of_total',
+                names='Category',
+                title='Asset Allocation by Category',
+                hover_data=['Value_numeric'],
+                labels={'Value_numeric': 'Value ($)'},
+                color_discrete_sequence=px.colors.qualitative.Bold
+            )
+            fig_asset.update_traces(textposition='inside', textinfo='percent+label')
+            fig_asset.update_layout(uniformtext_minsize=12, uniformtext_mode='hide')
+            fig_asset_bar = px.bar(
+                asset_data,
+                x='Category',
+                y='pct_of_total',
+                title='Asset Allocation by Category',
+                text_auto=True,
+                labels={'pct_of_total': 'Percentage of Portfolio', 'Category': 'Asset Category'},
+                color='Category',
+                color_discrete_sequence=px.colors.qualitative.Bold
+            )
+            asset_col1, asset_col2 = st.columns(2)
+            with asset_col1:
+                st.plotly_chart(fig_asset, width='stretch')
+            with asset_col2:
+                st.plotly_chart(fig_asset_bar, width='stretch')
+
+
+def render_realtime_holdings_dashboard(csv_path, refresh_seconds):
+    """Render a full portfolio analysis dashboard using the CSV with live-refreshed quotes."""
+    st.title("Real-Time Holdings Dashboard")
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.caption(f"Source: {os.path.basename(csv_path)}  |  Last refreshed: {now}  |  Auto-refreshes every {refresh_seconds}s")
+
+    if not csv_path or not os.path.exists(csv_path):
+        st.error("The holdings CSV for the real-time dashboard was not found.")
+        return
+
+    with st.spinner("Fetching live quotes..."):
+        live_df, quote_meta = build_realtime_holdings_dataframe(csv_path)
+
+    if live_df is None:
+        st.error("Unable to load the holdings CSV for the real-time dashboard.")
+        return
+
+    # Status banner
+    status_col1, status_col2, status_col3 = st.columns(3)
+    with status_col1:
+        total_value = pd.to_numeric(live_df["Value"], errors="coerce").fillna(0).sum() if "Value" in live_df.columns else 0
+        st.metric(label="Live Portfolio Value", value=f"${total_value:,.2f}")
+    with status_col2:
+        st.metric(label="Symbols with Live Quotes", value=f"{quote_meta['updated_rows']} / {quote_meta['updated_rows'] + len(quote_meta['missing_symbols'])}")
+    with status_col3:
+        daily_change = pd.to_numeric(live_df.get("1 day $", pd.Series(dtype=float)), errors="coerce").fillna(0).sum() if "1 day $" in live_df.columns else 0
+        st.metric(label="Today's Change", value=f"${daily_change:,.2f}")
+
+    if quote_meta["missing_symbols"]:
+        st.info("Stale prices (no live quote) for: " + ", ".join(quote_meta["missing_symbols"][:15]))
+
+    # Reorder columns: Name, Ticker first, then the rest
+    if "Name" in live_df.columns and "Ticker" in live_df.columns:
+        other_cols = [c for c in live_df.columns if c not in ("Name", "Ticker")]
+        live_df = live_df[["Name", "Ticker"] + other_cols]
+
+    render_portfolio_analysis(live_df, is_realtime=True)
 
 def calculate_portfolio_statistics(df):
     """Calculate statistics for the portfolio"""
@@ -1167,6 +2216,40 @@ def main():
     save_csv = sidebar_inputs["save_csv"]
     process_button = sidebar_inputs["process_button"]
 
+    # Optional real-time dashboard mode for holdings CSV files:
+    # ?realtime=1&csv_file=<url_encoded_path>&refresh=30
+    query_params = st.query_params
+    realtime_mode = str(query_params.get("realtime", "0")).lower() in {"1", "true", "yes", "on"}
+    realtime_csv_file = str(query_params.get("csv_file", "")).strip()
+    if realtime_csv_file:
+        realtime_csv_file = unquote_plus(realtime_csv_file)
+
+    refresh_raw = str(query_params.get("refresh", "300")).strip()
+    try:
+        realtime_refresh_seconds = max(5, min(300, int(refresh_raw)))
+    except ValueError:
+        realtime_refresh_seconds = 30
+
+    if realtime_mode:
+        st.caption(f"Real-time mode is active. Dashboard auto-refreshes every {realtime_refresh_seconds} seconds.")
+        components.html(
+            f"<script>setTimeout(function(){{window.parent.location.reload();}}, {realtime_refresh_seconds * 1000});</script>",
+            height=0,
+        )
+
+        if realtime_csv_file:
+            render_realtime_holdings_dashboard(realtime_csv_file, realtime_refresh_seconds)
+            st.sidebar.markdown("---")
+            st.sidebar.caption(f"Session ID: {st.session_state.user_id}")
+            return
+
+    # ── Performance report mode: ?report=1&report_file=<url_encoded_path> ────
+    report_mode = str(query_params.get("report", "0")).lower() in {"1", "true", "yes", "on"}
+    report_file_param = unquote_plus(str(query_params.get("report_file", "")).strip())
+    if report_mode and report_file_param:
+        render_performance_report_dashboard(report_file_param)
+        return
+
     # Process file only if button clicked and file path provided or if we already have results
     process_file_flag = False
 
@@ -1226,7 +2309,31 @@ def main():
         if result.get("csv_path"):
             df = read_csv_to_dataframe(result["csv_path"])
         if df is None and result.get("holdings"):
-            df = pd.DataFrame(result["holdings"])
+            # Handle both dict (consolidated) and list formats
+            holdings_data = result["holdings"]
+            if isinstance(holdings_data, dict) and 'holdings' in holdings_data:
+                df = pd.DataFrame(holdings_data['holdings'])
+            else:
+                df = pd.DataFrame(result["holdings"])
+
+        # Sort DataFrame by Value in descending order if it exists
+        if df is not None and 'Value' in df.columns:
+            df = df.sort_values(by='Value', ascending=False)
+
+        # Reorder columns to put Name before Ticker
+        if df is not None and 'Name' in df.columns and 'Ticker' in df.columns:
+            cols = df.columns.tolist()
+            cols.remove('Name')
+            cols.remove('Ticker')
+            cols = ['Name', 'Ticker'] + cols
+            df = df[cols]
+
+        # Show consolidation info if available
+        if result.get("holdings") and isinstance(result["holdings"], dict):
+            original_count = result["holdings"].get("original_count")
+            consolidated_count = result["holdings"].get("count")
+            if original_count and consolidated_count and original_count > consolidated_count:
+                st.info(f"📊 Holdings consolidated: {original_count} entries → {consolidated_count} unique holdings ({original_count - consolidated_count} duplicates merged)")
 
         # --- DOWNLOAD OPTIONS SECTION (moved to top) ---
         st.header("Download Options")
@@ -1234,8 +2341,11 @@ def main():
 
         # Provide CSV download
         if result["csv_path"]:
-            with open(result["csv_path"], "r") as f:
-                csv_data = f.read()
+            csv_df = pd.read_csv(result["csv_path"])
+            cols_to_drop = [c for c in ["Account", "Type"] if c in csv_df.columns]
+            if cols_to_drop:
+                csv_df = csv_df.drop(columns=cols_to_drop)
+            csv_data = csv_df.to_csv(index=False)
 
             with col1:
                 download_csv = st.download_button(
@@ -1246,20 +2356,8 @@ def main():
                     key="download_csv"
                 )
 
-        # MorningStar CSV download or text file as fallback
-        if result["morningstar_path"]:
-            with open(result["morningstar_path"], "r") as f:
-                ms_data = f.read()
-
-            with col2:
-                download_ms = st.download_button(
-                    label="Download MorningStar CSV",
-                    data=ms_data,
-                    file_name=os.path.basename(result["morningstar_path"]),
-                    mime="text/csv",
-                    key="download_ms"
-                )
-        elif result["text_path"]:
+        # Formatted text file download
+        if result["text_path"]:
             with open(result["text_path"], "r", encoding="utf-8") as f:
                 text_data = f.read()
 
@@ -1315,7 +2413,7 @@ def main():
                         # Create and display the timeline visualization
                         timeline_chart = create_networth_timeline_chart(df)
                         if timeline_chart:
-                            st.plotly_chart(timeline_chart, use_container_width=True)
+                            st.plotly_chart(timeline_chart, width='stretch')
 
                     with account_tabs[1]:  # Cash
                         if 'Total Cash' in df.columns:
@@ -1324,7 +2422,7 @@ def main():
                             chart_cash = create_networth_timeline_chart(df_cash)
                             if chart_cash:
                                 chart_cash.update_layout(title=dict(text='<b>Cash Accounts</b>'))
-                                st.plotly_chart(chart_cash, use_container_width=True)
+                                st.plotly_chart(chart_cash, width='stretch')
 
                     with account_tabs[2]:  # Investment
                         if 'Total Investment' in df.columns:
@@ -1333,7 +2431,7 @@ def main():
                             chart_inv = create_networth_timeline_chart(df_inv)
                             if chart_inv:
                                 chart_inv.update_layout(title=dict(text='<b>Investment Accounts</b>'))
-                                st.plotly_chart(chart_inv, use_container_width=True)
+                                st.plotly_chart(chart_inv, width='stretch')
 
                     with account_tabs[3]:  # Credit
                         if 'Total Credit' in df.columns:
@@ -1342,7 +2440,7 @@ def main():
                             chart_credit = create_networth_timeline_chart(df_credit)
                             if chart_credit:
                                 chart_credit.update_layout(title=dict(text='<b>Credit Accounts</b>'))
-                                st.plotly_chart(chart_credit, use_container_width=True)
+                                st.plotly_chart(chart_credit, width='stretch')
 
                     with account_tabs[4]:  # Loan
                         if 'Total Loan' in df.columns:
@@ -1351,7 +2449,7 @@ def main():
                             chart_loan = create_networth_timeline_chart(df_loan)
                             if chart_loan:
                                 chart_loan.update_layout(title=dict(text='<b>Loan Accounts</b>'))
-                                st.plotly_chart(chart_loan, use_container_width=True)
+                                st.plotly_chart(chart_loan, width='stretch')
 
                     with account_tabs[5]:  # Mortgage
                         if 'Total Mortgage' in df.columns:
@@ -1360,7 +2458,7 @@ def main():
                             chart_mortgage = create_networth_timeline_chart(df_mortgage)
                             if chart_mortgage:
                                 chart_mortgage.update_layout(title=dict(text='<b>Mortgage Accounts</b>'))
-                                st.plotly_chart(chart_mortgage, use_container_width=True)
+                                st.plotly_chart(chart_mortgage, width='stretch')
 
                     with account_tabs[6]:  # Other
                         if 'Total Other Assets' in df.columns:
@@ -1369,12 +2467,12 @@ def main():
                             chart_other = create_networth_timeline_chart(df_other)
                             if chart_other:
                                 chart_other.update_layout(title=dict(text='<b>Other Assets</b>'))
-                                st.plotly_chart(chart_other, use_container_width=True)
+                                st.plotly_chart(chart_other, width='stretch')
 
                     # Create and display the category breakdown over time
                     category_chart = create_networth_category_timeline_chart(df)
                     if category_chart:
-                        st.plotly_chart(category_chart, use_container_width=True)
+                        st.plotly_chart(category_chart, width='stretch')
 
                     # Add a tab view for different time ranges
                     st.subheader("Timeline Data")
@@ -1571,7 +2669,7 @@ def main():
                                 color_discrete_sequence=px.colors.qualitative.Bold
                             )
                             fig_pie.update_traces(textposition='inside', textinfo='percent+label')
-                            st.plotly_chart(fig_pie, use_container_width=True)
+                            st.plotly_chart(fig_pie, width='stretch')
 
                         with chart_col2:
                             # Bar chart for category breakdown
@@ -1585,7 +2683,7 @@ def main():
                                 color_discrete_sequence=px.colors.qualitative.Bold
                             )
                             fig_bar.update_layout(showlegend=False)
-                            st.plotly_chart(fig_bar, use_container_width=True)
+                            st.plotly_chart(fig_bar, width='stretch')
 
                         # Display category table with provider breakdown
                         if 'category_provider_breakdown' in stats and stats['category_provider_breakdown'] is not None and not stats['category_provider_breakdown'].empty:
@@ -1632,7 +2730,7 @@ def main():
                                 color_discrete_sequence=px.colors.qualitative.Set3
                             )
                             fig_type_pie.update_traces(textposition='inside', textinfo='percent+label')
-                            st.plotly_chart(fig_type_pie, use_container_width=True)
+                            st.plotly_chart(fig_type_pie, width='stretch')
 
                         with chart_col4:
                             # Horizontal bar chart for account types
@@ -1654,7 +2752,7 @@ def main():
                                 yaxis_title='Account Type',
                                 showlegend=False
                             )
-                            st.plotly_chart(fig_type_bar, use_container_width=True)
+                            st.plotly_chart(fig_type_bar, width='stretch')
 
                         # Display type table
                         st.dataframe(
@@ -1673,375 +2771,83 @@ def main():
                         st.dataframe(top_accounts_display, hide_index=True)
 
         else:
-            # Display portfolio data (existing logic)
+            # Display portfolio data
             if result["holdings"] and df is not None:
-                st.header("Portfolio Holdings")
-                st.dataframe(df, hide_index=True)
+                if result.get("csv_path") and os.path.exists(result["csv_path"]):
+                    realtime_url = f"?realtime=1&refresh=300&csv_file={quote_plus(result['csv_path'])}"
+                    st.markdown(
+                        f'<a href="{realtime_url}" target="_blank" rel="noopener noreferrer">Open Real-Time Dashboard ↗</a>',
+                        unsafe_allow_html=True,
+                    )
 
-                # --- LLM Portfolio Review Button (moved inside data validation) ---
-                st.subheader("Portfolio Review by AI")
-                stats = calculate_portfolio_statistics(df)
-                if st.button("Ask AI for Portfolio Insights", key="llm_review_btn"):
-                    with st.spinner("AI is reviewing your portfolio..."):
-                        llm_prompt = (
-                            "You are a financial portfolio expert. "
-                            "Review the following portfolio holdings and statistics. "
-                            "Provide a concise, actionable assessment of the portfolio's quality, diversification, risks, and suggest improvements. "
-                            "Here is the data:\n\n"
-                            f"Holdings (top 10):\n{df.head(10).to_string(index=False)}\n\n"
-                            f"Portfolio statistics:\n{stats}\n"
-                        )
-                        system_message = (
-                            "You are a helpful assistant that provides expert financial portfolio analysis. "
-                            "Be concise, actionable, and clear for a general audience."
-                        )
-                        llm_response = send_query_to_llm(
-                            query=llm_prompt,
-                            system_message=system_message
-                        )
-                        st.success("AI Portfolio Review:")
-                        st.write(llm_response)
-
-                # Now continue with portfolio statistics section
-                st.header("Portfolio Statistics")
-
-                # Calculate portfolio statistics
-                stats = calculate_portfolio_statistics(df)
-
-                if 'error' in stats:
-                    st.error(stats['error'])
-                    # Display raw dataframe columns to help debugging
-                    st.write("Available columns in the dataframe:", df.columns.tolist())
-                    # Display traceback if available
-                    if 'traceback' in stats:
-                        with st.expander("Error details"):
-                            st.code(stats['traceback'])
-                else:
-                    # Create three columns for better organization
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        st.subheader("Summary Statistics")
-                        metrics_col1, metrics_col2 = st.columns(2)
-
-                        with metrics_col1:
-                            st.metric(label="Total Value", value=f"${stats['total_value']:,.2f}")
-                            st.metric(label="Holdings Count", value=stats['count'])
-                            st.metric(label="Average Value", value=f"${stats['avg_value']:,.2f}")
-                            st.metric(label="Median Value", value=f"${stats['median_value']:,.2f}")
-
-                        with metrics_col2:
-                            st.metric(label="Largest Holding", value=f"${stats['max_value']:,.2f}")
-                            st.metric(label="Smallest Holding", value=f"${stats['min_value']:,.2f}")
-                            st.metric(label="Value Range", value=f"${stats['value_range']:,.2f}")
-                            st.metric(label="Standard Deviation", value=f"${stats['std_dev']:,.2f}")
-
-                        # Concentration metrics
-                        st.subheader("Portfolio Concentration")
-                        metrics_col3, metrics_col4 = st.columns(2)
-
-                        with metrics_col3:
-                            st.metric(label="Top 5 Holdings", value=f"{stats['top_5_pct']:.2f}%")
-                            st.metric(label="HHI Score", value=f"{stats['hhi']:.2f}")
-
-                        with metrics_col4:
-                            st.metric(label="Top 10 Holdings", value=f"{stats['top_10_pct']:.2f}%")
-                            st.metric(label="Concentration", value=stats['concentration'])
-
-                    # Asset allocation chart if available
-                    if 'asset_allocation' in stats and not stats['asset_allocation'].empty:
-                        with st.expander("Asset Allocation", expanded=True):
-                            asset_data = stats['asset_allocation']
-                            st.bar_chart(asset_data.set_index('Category')['pct_of_total'])
-                            st.dataframe(
-                                asset_data[['Category', 'pct_of_total']].rename(
-                                    columns={'pct_of_total': '% of Portfolio'}
-                                ).reset_index(drop=True),
-                                hide_index=True
-                            )
-
-                    with col2:
-                        st.subheader("Top Holdings")
-                        # Get top 10 holdings
-                        top_data = stats['holdings_pct'].head(10)
-
-                        # Calculate "Others" only if more than 10 holdings
-                        others_sum = stats['holdings_pct'].iloc[10:]['pct_of_total'].sum() if len(stats['holdings_pct']) > 10 else 0
-
-                        # Add "Other" category if there are more than 10 holdings
-                        if others_sum > 0:
-                            others_row = pd.DataFrame({
-                                'Symbol': ['OTHER'],
-                                'Name': ['Other Holdings'],
-                                'Value_numeric': [others_sum / 100 * stats['total_value']],
-                                'pct_of_total': [others_sum]
-                            })
-                            display_data = pd.concat([top_data, others_row])
-                        else:
-                            display_data = top_data
-
-                        # Create a table showing top holdings with percentages
-                        # Increase the height of the dataframe to avoid scrolling
-                        st.dataframe(
-                            display_data[['Name', 'Symbol', 'pct_of_total']].rename(
-                                columns={'pct_of_total': '% of Portfolio'}
-                            ).reset_index(drop=True),
-                            hide_index=True,
-                            height=420  # Set a fixed height that should accommodate 10-11 rows
-                        )
-
-
-                    # Add a new section for more charts
-                    st.header("Portfolio Visualizations")
-
-                    # Create tabs for different chart types
-                    tabs = st.tabs(["Holdings Treemap", "Top 10 Bar Chart", "Value Distribution", "Portfolio Concentration"])
-
-                    # Tab 1: Holdings Treemap - Shows hierarchical view of holdings
-                    with tabs[0]:
-                        # Create a treemap of holdings
-                        treemap_data = display_data.copy()
-                        fig_treemap = px.treemap(
-                            treemap_data,
-                            path=['Symbol'],
-                            values='pct_of_total',
-                            color='Value_numeric',
-                            color_continuous_scale='Viridis',
-                            hover_data=['Name', 'Value_numeric'],
-                            title='Portfolio Holdings Treemap'
-                        )
-                        fig_treemap.update_layout(
-                            height=600,
-                            margin=dict(t=50, l=25, r=25, b=25)
-                        )
-                        st.plotly_chart(fig_treemap, use_container_width=True)
-                        st.caption("Treemap visualization shows each holding sized by percentage of portfolio with color intensity based on value.")
-
-                    # Tab 2: Top 10 Bar Chart
-                    with tabs[1]:
-                        # Create horizontal bar chart of top holdings
-                        top10_data = stats['holdings_pct'].head(10).copy()
-                        top10_data = top10_data.sort_values('pct_of_total')
-
-                        fig_bar = go.Figure(go.Bar(
-                            x=top10_data['pct_of_total'],
-                            y=top10_data['Name'] + " (" + top10_data['Symbol'] + ")",
-                            orientation='h',
-                            marker=dict(
-                                color=top10_data['pct_of_total'],
-                                colorscale='Viridis'
-                            ),
-                            text=[f"${v:,.2f}" for v in top10_data['Value_numeric']],
-                            textposition='auto'
-                        ))
-                        fig_bar.update_layout(
-                            title='Top 10 Holdings by Portfolio Percentage',
-                            xaxis_title='Percentage of Portfolio',
-                            yaxis_title='Holdings',
-                            height=500,
-                            margin=dict(l=250, r=50)  # Increase left margin for longer holding names
-                        )
-                        st.plotly_chart(fig_bar, use_container_width=True)
-
-                    # Tab 3: Value Distribution Histogram
-                    with tabs[2]:
-                        # Create a histogram of holding values
-                        # Filter out extreme outliers for better visualization
-                        q1 = np.percentile(df['Value_numeric'], 25)
-                        q3 = np.percentile(df['Value_numeric'], 75)
-                        iqr = q3 - q1
-                        upper_bound = q3 + 2.5 * iqr  # Less strict than 1.5*IQR to include more data
-
-                        filtered_values = df[df['Value_numeric'] <= upper_bound]['Value_numeric']
-
-                        fig_hist = px.histogram(
-                            filtered_values,
-                            nbins=20,
-                            title='Distribution of Holding Values',
-                            labels={'value': 'Holding Value ($)', 'count': 'Number of Holdings'},
-                            color_discrete_sequence=['lightblue'],
-                        )
-                        fig_hist.update_layout(
-                            showlegend=False,
-                            height=500
-                        )
-                        st.plotly_chart(fig_hist, use_container_width=True)
-
-                        # Add descriptive statistics
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("Mean Value", f"${stats['avg_value']:,.2f}")
-                        col2.metric("Median Value", f"${stats['median_value']:,.2f}")
-                        col3.metric("Standard Deviation", f"${stats['std_dev']:,.2f}")
-
-                        if upper_bound < stats['max_value']:
-                            st.info(f"Note: Some holdings with values greater than ${upper_bound:,.2f} were excluded from the histogram for better visualization.")
-
-                    # Tab 4: Portfolio Concentration Analysis
-                    with tabs[3]:
-                        # Create data for Lorenz curve (measure of inequality in portfolio distribution)
-                        lorenz_data = stats['holdings_pct'].copy().sort_values('Value_numeric')
-                        lorenz_data['cumulative_pct'] = lorenz_data['Value_numeric'].cumsum() / stats['total_value'] * 100
-                        lorenz_data['holding_pct'] = 100 * (np.arange(1, len(lorenz_data) + 1) / len(lorenz_data))
-
-                        # Create Lorenz curve
-                        fig_lorenz = go.Figure()
-
-                        # Add perfect equality line (diagonal)
-                        fig_lorenz.add_trace(go.Scatter(
-                            x=[0, 100],
-                            y=[0, 100],
-                            mode='lines',
-                            name='Perfect Equality',
-                            line=dict(color='black', dash='dash')
-                        ))
-
-                        # Add Lorenz curve
-                        fig_lorenz.add_trace(go.Scatter(
-                            x=lorenz_data['holding_pct'].tolist(),
-                            y=lorenz_data['cumulative_pct'].tolist(),
-                            mode='lines',
-                            name='Portfolio Distribution',
-                            fill='tozeroy',
-                            line=dict(color='blue')
-                        ))
-
-                        fig_lorenz.update_layout(
-                            title='Portfolio Concentration Analysis (Lorenz Curve)',
-                            xaxis_title='Cumulative % of Holdings',
-                            yaxis_title='Cumulative % of Portfolio Value',
-                            height=500
-                        )
-                        st.plotly_chart(fig_lorenz, use_container_width=True)
-
-                        # Explanation of the Lorenz curve
-                        st.caption("""
-                        **Interpreting the Lorenz Curve:**
-                        - The diagonal line represents perfect equality (all holdings have equal value)
-                        - The curve shows actual distribution of your portfolio
-                        - The greater the distance between the curve and diagonal, the more concentrated your portfolio
-                        - A concentrated portfolio may have higher risk due to lack of diversification
-                        """)
-
-                        # Add Gini coefficient (measure of inequality) if we have enough holdings
-                        if len(lorenz_data) > 5:
-                            # Calculate approximate Gini coefficient from Lorenz curve data
-                            x = lorenz_data['holding_pct'].values / 100
-                            y = lorenz_data['cumulative_pct'].values / 100
-                            x = np.insert(x, 0, 0)
-                            y = np.insert(y, 0, 0)
-                            # Use np.trapezoid instead of np.trapz to avoid DeprecationWarning
-                            B = np.trapezoid(y, x)
-                            gini = 1 - 2 * B
-
-                            st.metric(
-                                "Portfolio Gini Coefficient",
-                                f"{gini:.2f}",
-                                help="Measures inequality in your portfolio. Values range from 0 (perfect equality) to 1 (perfect inequality)."
-                            )
-
-                            # Interpret Gini coefficient
-                            if gini < 0.2:
-                                concentration = "Very Low"
-                            elif gini < 0.4:
-                                concentration = "Low"
-                            elif gini < 0.6:
-                                concentration = "Moderate"
-                            elif gini < 0.8:
-                                concentration = "High"
-                            else:
-                                concentration = "Very High"
-
-                            st.info(f"Your portfolio has a **{concentration}** concentration level based on the Gini coefficient.")
-
-                            st.markdown("""
-                            ### 📘 Understanding Gini vs HHI
-
-                            **Gini Coefficient**
-                            - Measures overall *inequality* in your portfolio.
-                            - Sensitive to **all holdings**, including small ones.
-                            - A high Gini (close to 1) means a few holdings make up most of the portfolio, with many very small ones.
-
-                            **HHI (Herfindahl-Hirschman Index)**
-                            - Measures *concentration* using squared percentage weights.
-                            - Focuses more on **large holdings**.
-                            - A low HHI means no single holding dominates—even if many others are small.
-
-                            🧠 **Why they can differ:**
-                            You might have a few large holdings and many tiny ones.
-                            Gini will say "high inequality", while HHI might still say "low concentration".
-
-                            Both are useful — Gini shows diversification risk; HHI shows exposure to dominant assets.
-                            """)
-
-                    # Asset allocation section - if available, AFTER the tabs
-                    if 'asset_allocation' in stats and not stats['asset_allocation'].empty:
-                        st.header("Asset Allocation")
-                        asset_data = stats['asset_allocation']
-
-                        # Create pie chart for asset allocation
-                        fig_asset = px.pie(
-                            asset_data,
-                            values='pct_of_total',
-                            names='Category',
-                            title='Asset Allocation by Category',
-                            hover_data=['Value_numeric'],
-                            labels={'Value_numeric': 'Value ($)'},
-                            color_discrete_sequence=px.colors.qualitative.Bold
-                        )
-                        fig_asset.update_traces(textposition='inside', textinfo='percent+label')
-                        fig_asset.update_layout(uniformtext_minsize=12, uniformtext_mode='hide')
-
-                        # Create bar chart for asset allocation
-                        fig_asset_bar = px.bar(
-                            asset_data,
-                            x='Category',
-                            y='pct_of_total',
-                            title='Asset Allocation by Category',
-                            text_auto=True,
-                            labels={'pct_of_total': 'Percentage of Portfolio', 'Category': 'Asset Category'},
-                            color='Category',
-                            color_discrete_sequence=px.colors.qualitative.Bold
-                        )
-
-                        # Use columns to display charts side by side
-                        asset_col1, asset_col2 = st.columns(2)
-
-                        with asset_col1:
-                            st.plotly_chart(fig_asset, use_container_width=True)
-
-                        with asset_col2:
-                            st.plotly_chart(fig_asset_bar, use_container_width=True)
+                render_portfolio_analysis(df)
 
     if not result or not result.get("success", False):
         # No file processed yet or processing failed, show instructions
         st.markdown("""
         ### Empower Portfolio & Net Worth Extractor
         1. **Get your data from Empower**:
-           - Log in to your Empower Personal Dashboard account at [home.personalcapital.com](https://home.personalcapital.com)
-           - **For Portfolio data**: Navigate to **Investing** → **Holdings** in the main menu
-           - **For Net Worth data**: Navigate to **Overview** → **Net Worth** in the main menu
-           - **For Safari users**:
-             - Right-click and select "Save As"
-             - Choose "Web Archive" format (.webarchive)
-           - **For Chrome/Edge/Firefox users**:
-             - Right-click and select "Save As" or "Save Page As"
-             - Choose "Web Page, Complete" or "MHTML" format (.mhtml)
+           - Log in to your Empower Personal Dashboard at [home.personalcapital.com](https://home.personalcapital.com)
+
+           **Option A – JSON via the Site JSON Capture Exporter extension (easiest)**:
+           Install the Chrome extension (see the *JSON via Browser Extension* tab below), then simply
+           navigate to each Empower page — the extension captures the API response automatically.
+           Click the extension icon and hit **Download** to save the file:
+           - `Empower - holdings_getHoldings_*.json` – portfolio holdings
+           - `Empower - networth_getHistories_*.json` – net worth history
+           - `Empower - transactions_getUserTransactions_*.json` – transactions
+
+           **Option B – Web page files**:
+           - Navigate to **Investing → Holdings** (portfolio) or **Overview → Net Worth** (net worth)
+           - **Safari**: Save As → Web Archive (.webarchive)
+           - **Chrome / Edge**: Ctrl+S / ⌘+S → Webpage, Complete (.mhtml)
 
         2. **Process your data**:
            - Upload the saved file using the file uploader in the sidebar ←
-           - The app will automatically detect if it's a portfolio or net worth file
-           - Click **Process File** button
-           - View your data and download various file formats
+           - The app automatically detects the file type (holdings, net worth, or transactions)
+           - Click **Process File** and view your results
 
         3. **Download options**:
-           - **For Portfolio files**: CSV file, MorningStar CSV, Text Report with detailed analysis
-           - **For Net Worth files**: CSV file, Text Report with net worth summary
+           - **Portfolio / Holdings**: CSV + detailed text report
+           - **Net Worth History**: CSV + net worth summary report
+           - **Transactions**: CSV export
         """)
 
-        # Add tabs for different browser instructions
-        browser_tabs = st.tabs(["Safari", "Chrome", "Edge", "Firefox"])
+        # Add tabs for different export methods
+        browser_tabs = st.tabs(["JSON via DevTools", "Safari", "Chrome", "Edge", "Firefox"])
 
         with browser_tabs[0]:
+            st.subheader("JSON via Browser Extension (Easiest)")
+            st.markdown("""
+            The **Site JSON Capture Exporter** Chrome extension automates the capture — no DevTools needed.
+
+            **One-time setup:**
+            1. Load the extension in Chrome:
+               - Go to `chrome://extensions`
+               - Enable **Developer mode** (top-right toggle)
+               - Click **Load unpacked** and select the `site-json-capture-exporter-mv3` folder
+            2. The extension icon will appear in your toolbar
+
+            **Capturing data (repeat as needed):**
+            1. Log in to Empower at [participant.empower-retirement.com](https://participant.empower-retirement.com)
+            2. Navigate to the page for the data you want — the extension captures automatically as the page loads:
+
+            | Empower page | Data captured | Filename saved |
+            |---|---|---|
+            | **Net Worth** (`#/net-worth`) | Net worth history | `Empower - networth_getHistories_YYYYMMDD.json` |
+            | **All Transactions** (`#/all-transactions`) | Transaction history | `Empower - transactions_getUserTransactions_YYYYMMDD.json` |
+            | **Portfolio → Allocation** (`#/portfolio/allocation`) | Allocation data | `Empower - allocations_getHoldings_YYYYMMDD.json` |
+            | **Portfolio → Holdings** (`#/portfolio/holdings`) | Holdings (consolidated) | `Empower - holdings_getHoldings_YYYYMMDD.json` |
+            | **Portfolio → Holdings** (`#/portfolio/holdings`) | Holdings (per account) | `Empower - holdings_detail_getHoldings_YYYYMMDD.json` |
+
+            3. Click the extension icon in the toolbar
+            4. Click **Download latest** (or **Download all** to grab every captured file at once)
+            5. Upload the downloaded `.json` file using the sidebar ←
+
+            > The extension only runs on the Empower site and saves files directly to your device — your data is never sent anywhere else.
+            """)
+
+        with browser_tabs[1]:
             st.subheader("Safari Instructions")
             st.markdown("""
             1. Navigate to your Empower **Portfolio** or **Net Worth** page
@@ -2051,7 +2857,7 @@ def main():
             5. Upload the .webarchive file using the sidebar
             """)
 
-        with browser_tabs[1]:
+        with browser_tabs[2]:
             st.subheader("Chrome Instructions")
             st.markdown("""
             1. Navigate to your Empower **Portfolio** or **Net Worth** page
@@ -2061,7 +2867,7 @@ def main():
             5. Upload the .mhtml file using the sidebar
             """)
 
-        with browser_tabs[2]:
+        with browser_tabs[3]:
             st.subheader("Edge Instructions")
             st.markdown("""
             1. Navigate to your Empower **Portfolio** or **Net Worth** page
@@ -2071,7 +2877,7 @@ def main():
             5. Upload the .mhtml file using the sidebar
             """)
 
-        with browser_tabs[3]:
+        with browser_tabs[4]:
             st.subheader("Firefox Instructions")
             st.markdown("""
             1. Navigate to your Empower **Portfolio** or **Net Worth** page
@@ -2085,12 +2891,7 @@ def main():
         # Add some helpful tips
         st.info("💡 **Tip**: This tool works entirely in your browser - your financial data never leaves your computer.")
 
-    # Clean up temporary files after processing - no need to check file_selection_method anymore
-    if file_path and os.path.exists(file_path):
-        try:
-            os.unlink(file_path)
-        except:
-            pass
+    # Keep uploaded files so real-time links can re-process the same source in a new tab.
 
     # Add a small footer to show user ID (optional)
     st.sidebar.markdown("---")

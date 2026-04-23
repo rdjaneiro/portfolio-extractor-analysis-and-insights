@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>JSON Capture Exporter</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 12px; width: 320px; }
+      button { width: 100%; margin: 6px 0; padding: 10px; }
+      #status { margin-top: 10px; font-size: 12px; color: #444; }
+      #list { margin-top: 10px; font-size: 12px; max-height: 180px; overflow: auto; }
+      .item { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid #eee; }
+    </style>
+  </head>
+  <body>
+    <button id="refresh">Refresh captures</button>
+    <button id="downloadLatest">Download latest</button>
+    <button id="downloadAll">Download all</button>
+    <button id="clear">Clear captured list</button>
+
+    <div id="status">No captures loaded yet.</div>
+    <div id="list"></div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

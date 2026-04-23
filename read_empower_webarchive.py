@@ -352,6 +352,9 @@ def save_holdings_to_csv(holdings_data, output_file):
     else:
         actual_holdings = holdings_data
 
+    # Sort holdings by Value in descending order
+    sorted_holdings = sorted(actual_holdings, key=lambda x: float(x.get('Value', 0) or 0), reverse=True)
+
     # Define CSV headers with Name before Ticker
     fieldnames = ["Name", "Ticker", "Shares", "Price", "Change", "Day_Percent", "Day_Dollar", "Value"]
 
@@ -360,7 +363,7 @@ def save_holdings_to_csv(holdings_data, output_file):
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
             # Write rows but exclude the _Original fields not meant for CSV
-            for row in actual_holdings:
+            for row in sorted_holdings:
                 csv_row = {k: v for k, v in row.items() if not k.endswith('_Original')}
                 writer.writerow(csv_row)
         return True

@@ -50,11 +50,13 @@ def memoize(func):
     """Memoize decorator to cache function results"""
     def wrapper(*args, **kwargs):
         key = (args, tuple(sorted(kwargs.items())))
-        logger.info(f"Memoize: Caching result for {func.__name__}")
         if key in cache:
+            logger.info(f"Memoize: Cache hit for {func.__name__}")
             return cache[key]
         result = func(*args, **kwargs)
-        cache[key] = result
+        if result is not None:  # Never cache None/failed results
+            cache[key] = result
+            logger.info(f"Memoize: Cached result for {func.__name__}")
         return result
     return wrapper
 
@@ -125,7 +127,7 @@ def send_query_to_llm(system_message, query, llm_choice = None):
                     messages=[
                         {"role": "user", "content": system_message + " " + query}
                     ],
-                    max_tokens=200000
+                    max_tokens=4096
                 )
                 reply = response.content[0].text
             elif model_id == "o1-mini":
