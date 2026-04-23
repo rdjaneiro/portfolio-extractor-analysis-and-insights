@@ -1388,6 +1388,112 @@ def render_performance_report_dashboard(report_file):
 
     st.divider()
 
+    # ── Performance Highlights ───────────────────────────────────────────────
+    _hl_df = perf_df.copy()
+    for _c in PCT_COLS + ["Day Chg %"]:
+        if _c in _hl_df.columns:
+            _hl_df[_c] = pd.to_numeric(_hl_df[_c], errors="coerce")
+
+    _id_cols = [c for c in ["Symbol", "Name"] if c in _hl_df.columns]
+
+    def _hl_table(subset_df, pct_col):
+        """Return a display-ready copy of subset_df with colour-formatted pct_col."""
+        _disp = subset_df[_id_cols + [pct_col]].copy().reset_index(drop=True)
+        _raw  = pd.to_numeric(_disp[pct_col], errors="coerce")
+        _disp[pct_col] = _raw.map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
+
+        def _clr(val):
+            try:
+                v = float(str(val).replace("%", "").replace("+", ""))
+                if v > 0:
+                    return "background-color:#D5F5E3;color:#1E8449;font-weight:bold"
+                if v < 0:
+                    return "background-color:#FADBD8;color:#C0392B;font-weight:bold"
+            except (TypeError, ValueError):
+                pass
+            return ""
+
+        return _disp.style.map(_clr, subset=[pct_col])
+
+    st.subheader("Performance Highlights")
+
+    # Best / Worst performers – YTD
+    if "YTD %" in _hl_df.columns:
+        _ytd_valid = _hl_df.dropna(subset=["YTD %"])
+        _best_ytd  = _ytd_valid.nlargest(5, "YTD %")
+        _worst_ytd = _ytd_valid.nsmallest(5, "YTD %")
+
+        _col_b, _col_w = st.columns(2)
+        with _col_b:
+            st.markdown("**Top 5 – YTD Return**")
+            st.dataframe(_hl_table(_best_ytd, "YTD %"), hide_index=True, use_container_width=True)
+        with _col_w:
+            st.markdown("**Bottom 5 – YTD Return**")
+            st.dataframe(_hl_table(_worst_ytd, "YTD %"), hide_index=True, use_container_width=True)
+
+    # Best / Worst performers – 1-Year
+    if "1-Year %" in _hl_df.columns:
+        _1y_valid  = _hl_df.dropna(subset=["1-Year %"])
+        _best_1y   = _1y_valid.nlargest(5, "1-Year %")
+        _worst_1y  = _1y_valid.nsmallest(5, "1-Year %")
+
+        _col_b2, _col_w2 = st.columns(2)
+        with _col_b2:
+            st.markdown("**Top 5 – 1-Year Return**")
+            st.dataframe(_hl_table(_best_1y, "1-Year %"), hide_index=True, use_container_width=True)
+        with _col_w2:
+            st.markdown("**Bottom 5 – 1-Year Return**")
+            st.dataframe(_hl_table(_worst_1y, "1-Year %"), hide_index=True, use_container_width=True)
+
+    # Momentum – composite score weighted toward recent periods
+    # Score = 0.40 * YTD% + 0.35 * 1-Year% + 0.15 * 3-Yr Ann% + 0.10 * 5-Yr Ann%
+    _mom_weights = [("YTD %", 0.40), ("1-Year %", 0.35), ("3-Yr Ann %", 0.15), ("5-Yr Ann %", 0.10)]
+    _avail_mom   = [(c, w) for c, w in _mom_weights if c in _hl_df.columns]
+    if len(_avail_mom) >= 2:
+        _mom_df = _hl_df.copy()
+        _weight_sum = sum(w for _, w in _avail_mom)
+        _mom_df["Momentum Score"] = sum(
+            pd.to_numeric(_mom_df[c], errors="coerce").fillna(0) * w
+            for c, w in _avail_mom
+        ) / _weight_sum
+        _mom_valid = _mom_df.dropna(subset=["Momentum Score"])
+        _mom_top   = _mom_valid.nlargest(5, "Momentum Score")
+        _mom_bot   = _mom_valid.nsmallest(5, "Momentum Score")
+        _mom_display_cols = _id_cols + [c for c, _ in _avail_mom] + ["Momentum Score"]
+
+        def _fmt_mom_df(subset):
+            _d = subset[_mom_display_cols].reset_index(drop=True).copy()
+            for _mc in [c for c, _ in _avail_mom]:
+                _d[_mc] = pd.to_numeric(_d[_mc], errors="coerce").map(
+                    lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A"
+                )
+            _d["Momentum Score"] = pd.to_numeric(_d["Momentum Score"], errors="coerce").map(
+                lambda x: f"{x:+.2f}" if pd.notna(x) else "N/A"
+            )
+            return _d
+
+        def _mom_clr(val):
+            try:
+                v = float(str(val).replace("+", ""))
+                if v > 0:
+                    return "background-color:#D5F5E3;color:#1E8449;font-weight:bold"
+                if v < 0:
+                    return "background-color:#FADBD8;color:#C0392B;font-weight:bold"
+            except (TypeError, ValueError):
+                pass
+            return ""
+
+        _mom_label = "*(weighted: 40% YTD · 35% 1-Year · 15% 3-Year · 10% 5-Year)*"
+        _mom_col_t, _mom_col_b = st.columns(2)
+        with _mom_col_t:
+            st.markdown(f"**Top 5 – Momentum** {_mom_label}")
+            st.dataframe(_fmt_mom_df(_mom_top).style.map(_mom_clr, subset=["Momentum Score"]), hide_index=True, use_container_width=True)
+        with _mom_col_b:
+            st.markdown(f"**Bottom 5 – Momentum** {_mom_label}")
+            st.dataframe(_fmt_mom_df(_mom_bot).style.map(_mom_clr, subset=["Momentum Score"]), hide_index=True, use_container_width=True)
+
+    st.divider()
+
     # ── Styled table ─────────────────────────────────────────────────────────
     def _colour_pct(val):
         try:
@@ -1826,6 +1932,28 @@ def render_realtime_holdings_dashboard(csv_path, refresh_seconds):
     if "Name" in live_df.columns and "Ticker" in live_df.columns:
         other_cols = [c for c in live_df.columns if c not in ("Name", "Ticker")]
         live_df = live_df[["Name", "Ticker"] + other_cols]
+
+    # --- Top 5 Winners / Losers for the Day ---
+    if "1 day $" in live_df.columns:
+        _mover_df = live_df.copy()
+        _mover_df["_day_dollar"] = pd.to_numeric(_mover_df["1 day $"], errors="coerce")
+        _mover_df = _mover_df.dropna(subset=["_day_dollar"])
+        if not _mover_df.empty:
+            _winners = _mover_df.nlargest(5, "_day_dollar")
+            _losers = _mover_df.nsmallest(5, "_day_dollar")
+            _display_cols = [c for c in ["Name", "Ticker", "1 Day %", "1 day $"] if c in _mover_df.columns]
+            _mover_col_cfg = {}
+            if "1 day $" in _display_cols:
+                _mover_col_cfg["1 day $"] = st.column_config.NumberColumn("1 day $", format="$%,.2f")
+
+            st.subheader("Today's Top Movers")
+            _win_col, _lose_col = st.columns(2)
+            with _win_col:
+                st.markdown("**Top 5 Winners**")
+                st.dataframe(_winners[_display_cols].reset_index(drop=True), hide_index=True, column_config=_mover_col_cfg)
+            with _lose_col:
+                st.markdown("**Top 5 Losers**")
+                st.dataframe(_losers[_display_cols].reset_index(drop=True), hide_index=True, column_config=_mover_col_cfg)
 
     render_portfolio_analysis(live_df, is_realtime=True)
 
