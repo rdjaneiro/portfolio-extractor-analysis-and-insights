@@ -51,7 +51,181 @@ and CSV format for further analysis.
 import streamlit as st
 
 # Set page config must be the first Streamlit command
-st.set_page_config(page_title="Empower Portfolio & Net Worth Extractor", layout="wide")
+st.set_page_config(
+    page_title="Empower Portfolio & Net Worth Extractor",
+    layout="wide",
+    page_icon="📈",
+)
+
+# ── Global modern UI stylesheet ───────────────────────────────────────────────
+_GLOBAL_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+/* ── Base ── */
+html, body, [class*="css"] {
+    font-family: 'Inter', sans-serif;
+}
+
+/* ── App background ── */
+.stApp {
+    background: linear-gradient(135deg, #0f1117 0%, #1a1d2e 100%);
+    color: #e8eaf0;
+}
+
+/* ── Main block padding ── */
+.block-container {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+    max-width: 1400px;
+}
+
+/* ── Headings ── */
+h1 { font-size: 2rem !important; font-weight: 700 !important; color: #f0f2ff !important; letter-spacing: -0.5px; }
+h2 { font-size: 1.5rem !important; font-weight: 600 !important; color: #dde1f5 !important; }
+h3 { font-size: 1.15rem !important; font-weight: 600 !important; color: #c5cae8 !important; }
+
+/* ── Metric cards ── */
+[data-testid="metric-container"] {
+    background: linear-gradient(145deg, #1e2235, #252a40);
+    border: 1px solid #2e3350;
+    border-radius: 12px;
+    padding: 1rem 1.25rem !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+[data-testid="metric-container"]:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+}
+[data-testid="stMetricLabel"] { color: #8892b0 !important; font-size: 0.78rem !important; font-weight: 500 !important; text-transform: uppercase; letter-spacing: 0.06em; }
+[data-testid="stMetricValue"] { color: #ccd6f6 !important; font-size: 1.6rem !important; font-weight: 700 !important; }
+[data-testid="stMetricDelta"] svg { display: none; }
+
+/* ── Buttons ── */
+.stButton > button {
+    background: linear-gradient(135deg, #4f8ef7 0%, #3a7bd5 100%) !important;
+    color: #fff !important;
+    border: none !important;
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    font-size: 0.875rem !important;
+    padding: 0.5rem 1.25rem !important;
+    letter-spacing: 0.02em;
+    box-shadow: 0 2px 8px rgba(79,142,247,0.35);
+    transition: opacity 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease !important;
+}
+.stButton > button:hover {
+    opacity: 0.92 !important;
+    transform: translateY(-1px) !important;
+    box-shadow: 0 4px 14px rgba(79,142,247,0.5) !important;
+}
+
+/* ── Download button ── */
+.stDownloadButton > button {
+    background: linear-gradient(135deg, #27ae60 0%, #4ade80 100%) !important;
+    color: #fff !important;
+    border: none !important;
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    box-shadow: 0 2px 8px rgba(39,174,96,0.35);
+    transition: opacity 0.2s ease, transform 0.15s ease !important;
+}
+.stDownloadButton > button:hover {
+    opacity: 0.9 !important;
+    transform: translateY(-1px) !important;
+}
+
+/* ── Dataframes / tables ── */
+[data-testid="stDataFrame"] {
+    border-radius: 10px !important;
+    overflow: hidden;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+
+/* ── Tabs ── */
+[data-baseweb="tab-list"] {
+    background: #1a1d2e !important;
+    border-radius: 10px !important;
+    padding: 4px !important;
+    gap: 4px;
+}
+[data-baseweb="tab"] {
+    border-radius: 8px !important;
+    color: #8892b0 !important;
+    font-weight: 500 !important;
+    transition: background 0.2s ease, color 0.2s ease !important;
+}
+[aria-selected="true"][data-baseweb="tab"] {
+    background: linear-gradient(135deg, #4f8ef7, #3a7bd5) !important;
+    color: #fff !important;
+    font-weight: 600 !important;
+}
+
+/* ── Expanders ── */
+[data-testid="stExpander"] {
+    background: #1e2235 !important;
+    border: 1px solid #2e3350 !important;
+    border-radius: 10px !important;
+    margin-bottom: 0.5rem;
+}
+
+/* ── Alerts / info banners ── */
+.stAlert {
+    border-radius: 10px !important;
+    border-left-width: 4px !important;
+}
+
+/* ── Sidebar ── */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0d0f1a 0%, #141728 100%) !important;
+    border-right: 1px solid #1e2235 !important;
+}
+[data-testid="stSidebar"] .stMarkdown, [data-testid="stSidebar"] label, [data-testid="stSidebar"] p {
+    color: #c5cae8 !important;
+}
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+    color: #dde1f5 !important;
+}
+[data-testid="stSidebar"] .stButton > button {
+    width: 100% !important;
+}
+
+/* ── File uploader ── */
+[data-testid="stFileUploader"] {
+    background: #1e2235 !important;
+    border: 2px dashed #2e3350 !important;
+    border-radius: 10px !important;
+    padding: 1rem !important;
+    transition: border-color 0.2s ease !important;
+}
+[data-testid="stFileUploader"]:hover {
+    border-color: #4f8ef7 !important;
+}
+
+/* ── Divider ── */
+hr {
+    border-color: #2e3350 !important;
+    margin: 1.5rem 0 !important;
+}
+
+/* ── Spinner ── */
+.stSpinner > div { border-top-color: #4f8ef7 !important; }
+
+/* ── Captions ── */
+.stCaption { color: #636b87 !important; font-size: 0.78rem !important; }
+
+/* ── Select boxes & inputs ── */
+[data-baseweb="select"] > div,
+[data-baseweb="input"] > div {
+    background: #1e2235 !important;
+    border-color: #2e3350 !important;
+    border-radius: 8px !important;
+    color: #c5cae8 !important;
+}
+</style>
+"""
+st.markdown(_GLOBAL_CSS, unsafe_allow_html=True)
 
 # Now import all other modules
 import os
@@ -755,16 +929,6 @@ def save_raw_data_to_file(text, file_path_base):
 def render_sidebar():
     """Render all sidebar elements and return user inputs"""
     with st.sidebar:
-        st.markdown("""
-            <style>
-            /* Sidebar styling */
-            [data-testid="stSidebar"][aria-expanded="true"] {
-                min-width: 250px;
-                max-width: 450px;
-                background-color: lightblue;
-            }
-            </style>
-        """, unsafe_allow_html=True)
 
         # Add Buy Me a Coffee button at the top of sidebar
         st.markdown("""
@@ -1078,7 +1242,7 @@ def normalize_realtime_quote_symbol(ticker, name=""):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_performance_metrics(symbols):
-    """Fetch YTD, 1-Year, 3-Yr Ann, 5-Yr Ann, 10-Yr Ann returns for a tuple of symbols."""
+    """Fetch 30d, 90d, YTD, 1-Year, 3-Yr Ann, 5-Yr Ann, 10-Yr Ann returns for a tuple of symbols."""
     import datetime as _dt
     metrics = {}
     sym_list = [s for s in dict.fromkeys(symbols) if s]
@@ -1099,11 +1263,21 @@ def fetch_performance_metrics(symbols):
         total = end / start
         return (total ** (1 / years) - 1) * 100
 
+    def _simple_return(series, days):
+        """Simple return over the last `days` calendar days."""
+        cutoff = today - _dt.timedelta(days=days)
+        sub = series[series.index.date >= cutoff]
+        if len(sub) < 2:
+            return None
+        start, end = float(sub.iloc[0]), float(sub.iloc[-1])
+        if start <= 0:
+            return None
+        return (end / start - 1) * 100
+
     def _ytd_return(series):
         jan1 = _dt.date(today.year, 1, 1)
         sub = series[series.index.date >= jan1]
         if len(sub) < 1:
-            # Fall back to first available price this year
             sub = series
         if len(sub) < 2:
             return None
@@ -1113,10 +1287,11 @@ def fetch_performance_metrics(symbols):
         return (end / start - 1) * 100
 
     try:
+        # Use daily interval for 90-day accuracy, then reuse for all periods
         raw = yf.download(
             sym_list,
             period="10y",
-            interval="1mo",
+            interval="1d",
             auto_adjust=True,
             progress=False,
             threads=True,
@@ -1132,11 +1307,14 @@ def fetch_performance_metrics(symbols):
             if series.empty:
                 continue
             metrics[sym] = {
-                "ytd":    _ytd_return(series),
-                "1y":     _ann_return(series, 1),
-                "3y":     _ann_return(series, 3),
-                "5y":     _ann_return(series, 5),
-                "10y":    _ann_return(series, 10),
+                "30d":  _simple_return(series, 30),
+                "90d":  _simple_return(series, 90),
+                "180d": _simple_return(series, 180),
+                "ytd":  _ytd_return(series),
+                "1y":   _ann_return(series, 1),
+                "3y":   _ann_return(series, 3),
+                "5y":   _ann_return(series, 5),
+                "10y":  _ann_return(series, 10),
             }
     except Exception:
         pass
@@ -1271,6 +1449,7 @@ def build_realtime_holdings_dataframe(csv_path):
 def build_performance_excel(perf_df):
     """Build and return a formatted Excel workbook as BytesIO for the performance report."""
     import io as _io
+    from xlsxwriter.utility import xl_col_to_name
     buf = _io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
         perf_df.to_excel(writer, index=False, sheet_name="Portfolio Performance")
@@ -1298,11 +1477,12 @@ def build_performance_excel(perf_df):
         col_widths = {
             "Symbol": 10, "Name": 34, "Shares": 10, "Price": 12, "Value": 14,
             "Weight %": 9, "Day Chg $": 12, "Day Chg %": 10,
+            "30d %": 8, "90d %": 8, "180d %": 9,
             "YTD %": 9, "1-Year %": 9, "3-Yr Ann %": 10, "5-Yr Ann %": 10, "10-Yr Ann %": 11,
         }
-        PCT_COLS   = {"Weight %", "Day Chg %", "YTD %", "1-Year %", "3-Yr Ann %", "5-Yr Ann %", "10-Yr Ann %"}
+        PCT_COLS   = {"Weight %", "Day Chg %", "30d %", "90d %", "180d %", "YTD %", "1-Year %", "3-Yr Ann %", "5-Yr Ann %", "10-Yr Ann %"}
         MONEY_COLS = {"Price", "Value", "Day Chg $"}
-        PERF_COLS  = {"Day Chg %", "YTD %", "1-Year %", "3-Yr Ann %", "5-Yr Ann %", "10-Yr Ann %"}
+        PERF_COLS  = {"Day Chg %", "30d %", "90d %", "180d %", "YTD %", "1-Year %", "3-Yr Ann %", "5-Yr Ann %", "10-Yr Ann %"}
 
         for ci, cname in enumerate(COLS):
             ws.write(0, ci, cname, hdr_fmt)
@@ -1327,30 +1507,145 @@ def build_performance_excel(perf_df):
                     ws.write(excel_row, ci, val, text_even if is_even else text_odd)
 
         for cname in PERF_COLS:
+            if cname not in COLS:
+                continue
             ci = COLS.index(cname)
-            cl = chr(ord('A') + ci)
+            cl = xl_col_to_name(ci)
             rng = f"{cl}2:{cl}{nrows + 1}"
             # Use formula-type so text cells ("N/A") are never matched
             ws.conditional_format(rng, {"type": "formula",
                 "criteria": f"AND(ISNUMBER({cl}2),{cl}2<0)",
-                "format": wb.add_format({"bg_color": "#FADBD8", "font_color": "#C0392B", "bold": True, "num_format": "0.00%", "border": 1})})
+                "format": wb.add_format({"bg_color": "#2b0d0d", "font_color": "#f87171", "bold": True, "num_format": "0.00%", "border": 1})})
             ws.conditional_format(rng, {"type": "formula",
                 "criteria": f"AND(ISNUMBER({cl}2),{cl}2>0)",
-                "format": wb.add_format({"bg_color": "#D5F5E3", "font_color": "#1E8449", "bold": True, "num_format": "0.00%", "border": 1})})
+                "format": wb.add_format({"bg_color": "#0d2b1a", "font_color": "#4ade80", "bold": True, "num_format": "0.00%", "border": 1})})
 
-        ci_day = COLS.index("Day Chg $")
-        cl = chr(ord('A') + ci_day)
-        rng_day = f"{cl}2:{cl}{nrows+1}"
-        ws.conditional_format(rng_day, {"type": "formula",
-            "criteria": f"AND(ISNUMBER({cl}2),{cl}2<0)",
-            "format": wb.add_format({"bg_color": "#FADBD8", "font_color": "#C0392B", "bold": True, "num_format": "$#,##0.00", "border": 1})})
-        ws.conditional_format(rng_day, {"type": "formula",
-            "criteria": f"AND(ISNUMBER({cl}2),{cl}2>0)",
-            "format": wb.add_format({"bg_color": "#D5F5E3", "font_color": "#1E8449", "bold": True, "num_format": "$#,##0.00", "border": 1})})
+        if "Day Chg $" in COLS:
+            ci_day = COLS.index("Day Chg $")
+            cl = xl_col_to_name(ci_day)
+            rng_day = f"{cl}2:{cl}{nrows+1}"
+            ws.conditional_format(rng_day, {"type": "formula",
+                "criteria": f"AND(ISNUMBER({cl}2),{cl}2<0)",
+                "format": wb.add_format({"bg_color": "#2b0d0d", "font_color": "#f87171", "bold": True, "num_format": "$#,##0.00", "border": 1})})
+            ws.conditional_format(rng_day, {"type": "formula",
+                "criteria": f"AND(ISNUMBER({cl}2),{cl}2>0)",
+                "format": wb.add_format({"bg_color": "#0d2b1a", "font_color": "#4ade80", "bold": True, "num_format": "$#,##0.00", "border": 1})})
 
         ws.freeze_panes(1, 0)
         ws.set_row(0, 28)
         ws.set_zoom(110)
+
+        # ── Performance Highlights sheet ──────────────────────────────────────
+        HL_PCT_COLS = ["30d %", "90d %", "180d %", "YTD %", "1-Year %", "3-Yr Ann %", "5-Yr Ann %", "10-Yr Ann %"]
+        _hl = perf_df.copy()
+        for _c in HL_PCT_COLS:
+            if _c in _hl.columns:
+                _hl[_c] = pd.to_numeric(_hl[_c], errors="coerce")
+
+        _id_cols = [c for c in ["Symbol", "Name"] if c in _hl.columns]
+
+        # Momentum score
+        _mom_weights = [("30d %", 0.10), ("90d %", 0.25), ("180d %", 0.30),
+                        ("YTD %", 0.20), ("1-Year %", 0.10), ("3-Yr Ann %", 0.03), ("5-Yr Ann %", 0.02)]
+        _avail_mom = [(c, w) for c, w in _mom_weights if c in _hl.columns]
+        if _avail_mom:
+            _wsum = sum(w for _, w in _avail_mom)
+            _hl["Momentum Score"] = sum(
+                _hl[c].fillna(0) * w for c, w in _avail_mom
+            ) / _wsum
+
+        hl_ws = wb.add_worksheet("Performance Highlights")
+        hl_ws.set_zoom(110)
+
+        # Formats reused from parent scope
+        pos_pct_fmt  = wb.add_format({"bg_color": "#0d2b1a", "font_color": "#4ade80", "bold": True, "num_format": "0.00%", "border": 1, "valign": "vcenter"})
+        neg_pct_fmt  = wb.add_format({"bg_color": "#2b0d0d", "font_color": "#f87171", "bold": True, "num_format": "0.00%", "border": 1, "valign": "vcenter"})
+        neu_pct_fmt  = wb.add_format({"num_format": "0.00%", "border": 1, "valign": "vcenter"})
+        pos_num_fmt  = wb.add_format({"bg_color": "#0d2b1a", "font_color": "#4ade80", "bold": True, "num_format": "0.00", "border": 1, "valign": "vcenter"})
+        neg_num_fmt  = wb.add_format({"bg_color": "#2b0d0d", "font_color": "#f87171", "bold": True, "num_format": "0.00", "border": 1, "valign": "vcenter"})
+        neu_num_fmt  = wb.add_format({"num_format": "0.00", "border": 1, "valign": "vcenter"})
+        sec_hdr_fmt  = wb.add_format({"bold": True, "bg_color": "#1A1A2E", "font_color": "#E0E0E0",
+                                       "border": 1, "align": "center", "valign": "vcenter", "font_size": 12})
+        col_hdr_fmt  = wb.add_format({"bold": True, "bg_color": "#252A40", "font_color": "#C5CAE8",
+                                       "border": 1, "align": "center", "valign": "vcenter", "text_wrap": True})
+        text_fmt     = wb.add_format({"border": 1, "valign": "vcenter"})
+
+        def _write_hl_block(ws_obj, start_row, title, df_block, pct_cols, score_col=None):
+            """Write a titled block and return the next free row."""
+            block_cols = list(df_block.columns)
+            ncols = len(block_cols)
+            if ncols > 1:
+                ws_obj.merge_range(start_row, 0, start_row, ncols - 1, title, sec_hdr_fmt)
+            else:
+                ws_obj.write(start_row, 0, title, sec_hdr_fmt)
+            ws_obj.set_row(start_row, 20)
+            start_row += 1
+            for ci, cname in enumerate(block_cols):
+                ws_obj.write(start_row, ci, cname, col_hdr_fmt)
+            start_row += 1
+            for ri, (_, row) in enumerate(df_block.iterrows()):
+                for ci, cname in enumerate(block_cols):
+                    val = row[cname]
+                    is_none = val is None or (isinstance(val, float) and np.isnan(val))
+                    if is_none:
+                        ws_obj.write(start_row, ci, "N/A", text_fmt)
+                    elif cname in pct_cols:
+                        v = float(val) / 100.0
+                        ws_obj.write_number(start_row, ci, v, pos_pct_fmt if v > 0 else (neg_pct_fmt if v < 0 else neu_pct_fmt))
+                    elif score_col and cname == score_col:
+                        v = float(val)
+                        ws_obj.write_number(start_row, ci, v, pos_num_fmt if v > 0 else (neg_num_fmt if v < 0 else neu_num_fmt))
+                    else:
+                        ws_obj.write(start_row, ci, val, text_fmt)
+                start_row += 1
+            return start_row + 1  # blank gap
+
+        # Column widths on HL sheet
+        hl_ws.set_column(0, 0, 10)   # Symbol
+        hl_ws.set_column(1, 1, 30)   # Name
+        for _ci in range(2, 12):
+            hl_ws.set_column(_ci, _ci, 11)
+
+        current_row = 0
+        _pct_set = set(HL_PCT_COLS)
+
+        def _top_bot_block(col, n=5):
+            nonlocal current_row
+            if col not in _hl.columns:
+                return
+            valid = _hl.dropna(subset=[col])
+            top = valid.nlargest(n, col)[_id_cols + [col]].reset_index(drop=True)
+            bot = valid.nsmallest(n, col)[_id_cols + [col]].reset_index(drop=True)
+            current_row = _write_hl_block(hl_ws, current_row, f"Top {n} – {col}", top, _pct_set)
+            current_row = _write_hl_block(hl_ws, current_row, f"Bottom {n} – {col}", bot, _pct_set)
+
+        _top_bot_block("30d %")
+        _top_bot_block("90d %")
+        _top_bot_block("180d %")
+        _top_bot_block("YTD %")
+        _top_bot_block("1-Year %")
+
+        # ── Momentum sheet ────────────────────────────────────────────────────
+        if "Momentum Score" in _hl.columns:
+            mom_ws = wb.add_worksheet("Momentum")
+            mom_ws.set_zoom(110)
+            mom_ws.set_column(0, 0, 10)   # Symbol
+            mom_ws.set_column(1, 1, 30)   # Name
+            for _ci in range(2, 15):
+                mom_ws.set_column(_ci, _ci, 11)
+
+            _mom_disp_cols = _id_cols + [c for c, _ in _avail_mom] + ["Momentum Score"]
+            _mom_valid = _hl.dropna(subset=["Momentum Score"])
+            mom_row = 0
+            for _label, _getter in [("Top 10", lambda d: d.nlargest(10, "Momentum Score")),
+                                     ("Bottom 10", lambda d: d.nsmallest(10, "Momentum Score"))]:
+                _blk = _getter(_mom_valid)[_mom_disp_cols].reset_index(drop=True)
+                mom_row = _write_hl_block(
+                    mom_ws, mom_row,
+                    f"{_label} – Momentum (10% 30d · 25% 90d · 30% 180d · 20% YTD · 10% 1-Year · 3% 3-Yr · 2% 5-Yr)",
+                    _blk, _pct_set, score_col="Momentum Score"
+                )
+
     buf.seek(0)
     return buf
 
@@ -1371,7 +1666,7 @@ def render_performance_report_dashboard(report_file):
         st.warning("Report contains no data.")
         return
 
-    PCT_COLS  = ["YTD %", "1-Year %", "3-Yr Ann %", "5-Yr Ann %", "10-Yr Ann %"]
+    PCT_COLS  = ["30d %", "90d %", "180d %", "YTD %", "1-Year %", "3-Yr Ann %", "5-Yr Ann %", "10-Yr Ann %"]
     PERF_COLS = PCT_COLS  # same set for colour styling
 
     # ── Summary metrics ──────────────────────────────────────────────────────
@@ -1390,7 +1685,7 @@ def render_performance_report_dashboard(report_file):
 
     # ── Performance Highlights ───────────────────────────────────────────────
     _hl_df = perf_df.copy()
-    for _c in PCT_COLS + ["Day Chg %"]:
+    for _c in PCT_COLS + ["Day Chg %", "180d %"]:
         if _c in _hl_df.columns:
             _hl_df[_c] = pd.to_numeric(_hl_df[_c], errors="coerce")
 
@@ -1406,9 +1701,9 @@ def render_performance_report_dashboard(report_file):
             try:
                 v = float(str(val).replace("%", "").replace("+", ""))
                 if v > 0:
-                    return "background-color:#D5F5E3;color:#1E8449;font-weight:bold"
+                    return "background-color:#0d2b1a;color:#4ade80;font-weight:bold"
                 if v < 0:
-                    return "background-color:#FADBD8;color:#C0392B;font-weight:bold"
+                    return "background-color:#2b0d0d;color:#f87171;font-weight:bold"
             except (TypeError, ValueError):
                 pass
             return ""
@@ -1416,6 +1711,39 @@ def render_performance_report_dashboard(report_file):
         return _disp.style.map(_clr, subset=[pct_col])
 
     st.subheader("Performance Highlights")
+
+    # Best / Worst performers – 30d
+    if "30d %" in _hl_df.columns:
+        _30d_valid = _hl_df.dropna(subset=["30d %"])
+        _col_b0, _col_w0 = st.columns(2)
+        with _col_b0:
+            st.markdown("**Top 5 – 30-Day Return**")
+            st.dataframe(_hl_table(_30d_valid.nlargest(5, "30d %"), "30d %"), hide_index=True, use_container_width=True)
+        with _col_w0:
+            st.markdown("**Bottom 5 – 30-Day Return**")
+            st.dataframe(_hl_table(_30d_valid.nsmallest(5, "30d %"), "30d %"), hide_index=True, use_container_width=True)
+
+    # Best / Worst performers – 90d
+    if "90d %" in _hl_df.columns:
+        _90d_valid = _hl_df.dropna(subset=["90d %"])
+        _col_b00, _col_w00 = st.columns(2)
+        with _col_b00:
+            st.markdown("**Top 5 – 90-Day Return**")
+            st.dataframe(_hl_table(_90d_valid.nlargest(5, "90d %"), "90d %"), hide_index=True, use_container_width=True)
+        with _col_w00:
+            st.markdown("**Bottom 5 – 90-Day Return**")
+            st.dataframe(_hl_table(_90d_valid.nsmallest(5, "90d %"), "90d %"), hide_index=True, use_container_width=True)
+
+    # Best / Worst performers – 180d
+    if "180d %" in _hl_df.columns:
+        _180d_valid = _hl_df.dropna(subset=["180d %"])
+        _col_b180, _col_w180 = st.columns(2)
+        with _col_b180:
+            st.markdown("**Top 5 – 180-Day Return**")
+            st.dataframe(_hl_table(_180d_valid.nlargest(5, "180d %"), "180d %"), hide_index=True, use_container_width=True)
+        with _col_w180:
+            st.markdown("**Bottom 5 – 180-Day Return**")
+            st.dataframe(_hl_table(_180d_valid.nsmallest(5, "180d %"), "180d %"), hide_index=True, use_container_width=True)
 
     # Best / Worst performers – YTD
     if "YTD %" in _hl_df.columns:
@@ -1446,8 +1774,9 @@ def render_performance_report_dashboard(report_file):
             st.dataframe(_hl_table(_worst_1y, "1-Year %"), hide_index=True, use_container_width=True)
 
     # Momentum – composite score weighted toward recent periods
-    # Score = 0.40 * YTD% + 0.35 * 1-Year% + 0.15 * 3-Yr Ann% + 0.10 * 5-Yr Ann%
-    _mom_weights = [("YTD %", 0.40), ("1-Year %", 0.35), ("3-Yr Ann %", 0.15), ("5-Yr Ann %", 0.10)]
+    # 30d is intentionally low-weight (noise filter); 90d+180d carry the medium-term signal
+    # Score = 0.10*30d + 0.25*90d + 0.30*180d + 0.20*YTD + 0.10*1-Year + 0.03*3-Yr + 0.02*5-Yr
+    _mom_weights = [("30d %", 0.10), ("90d %", 0.25), ("180d %", 0.30), ("YTD %", 0.20), ("1-Year %", 0.10), ("3-Yr Ann %", 0.03), ("5-Yr Ann %", 0.02)]
     _avail_mom   = [(c, w) for c, w in _mom_weights if c in _hl_df.columns]
     if len(_avail_mom) >= 2:
         _mom_df = _hl_df.copy()
@@ -1457,8 +1786,8 @@ def render_performance_report_dashboard(report_file):
             for c, w in _avail_mom
         ) / _weight_sum
         _mom_valid = _mom_df.dropna(subset=["Momentum Score"])
-        _mom_top   = _mom_valid.nlargest(5, "Momentum Score")
-        _mom_bot   = _mom_valid.nsmallest(5, "Momentum Score")
+        _mom_top   = _mom_valid.nlargest(10, "Momentum Score")
+        _mom_bot   = _mom_valid.nsmallest(10, "Momentum Score")
         _mom_display_cols = _id_cols + [c for c, _ in _avail_mom] + ["Momentum Score"]
 
         def _fmt_mom_df(subset):
@@ -1476,21 +1805,18 @@ def render_performance_report_dashboard(report_file):
             try:
                 v = float(str(val).replace("+", ""))
                 if v > 0:
-                    return "background-color:#D5F5E3;color:#1E8449;font-weight:bold"
+                    return "background-color:#0d2b1a;color:#4ade80;font-weight:bold"
                 if v < 0:
-                    return "background-color:#FADBD8;color:#C0392B;font-weight:bold"
+                    return "background-color:#2b0d0d;color:#f87171;font-weight:bold"
             except (TypeError, ValueError):
                 pass
             return ""
 
-        _mom_label = "*(weighted: 40% YTD · 35% 1-Year · 15% 3-Year · 10% 5-Year)*"
-        _mom_col_t, _mom_col_b = st.columns(2)
-        with _mom_col_t:
-            st.markdown(f"**Top 5 – Momentum** {_mom_label}")
-            st.dataframe(_fmt_mom_df(_mom_top).style.map(_mom_clr, subset=["Momentum Score"]), hide_index=True, use_container_width=True)
-        with _mom_col_b:
-            st.markdown(f"**Bottom 5 – Momentum** {_mom_label}")
-            st.dataframe(_fmt_mom_df(_mom_bot).style.map(_mom_clr, subset=["Momentum Score"]), hide_index=True, use_container_width=True)
+        _mom_label = "*(weighted: 10% 30d · 25% 90d · 30% 180d · 20% YTD · 10% 1-Year · 3% 3-Year · 2% 5-Year)*"
+        st.markdown(f"**Top 10 – Momentum** {_mom_label}")
+        st.dataframe(_fmt_mom_df(_mom_top).style.map(_mom_clr, subset=["Momentum Score"]), hide_index=True, use_container_width=True)
+        st.markdown(f"**Bottom 10 – Momentum** {_mom_label}")
+        st.dataframe(_fmt_mom_df(_mom_bot).style.map(_mom_clr, subset=["Momentum Score"]), hide_index=True, use_container_width=True)
 
     st.divider()
 
@@ -1499,9 +1825,9 @@ def render_performance_report_dashboard(report_file):
         try:
             v = float(val)
             if v < 0:
-                return "background-color: #FADBD8; color: #C0392B; font-weight: bold"
+                return "background-color: #2b0d0d; color: #f87171; font-weight: bold"
             elif v > 0:
-                return "background-color: #D5F5E3; color: #1E8449; font-weight: bold"
+                return "background-color: #0d2b1a; color: #4ade80; font-weight: bold"
         except (TypeError, ValueError):
             pass
         return ""
@@ -1510,9 +1836,9 @@ def render_performance_report_dashboard(report_file):
         try:
             v = float(val)
             if v < 0:
-                return "color: #C0392B; font-weight: bold"
+                return "color: #f87171; font-weight: bold"
             elif v > 0:
-                return "color: #1E8449; font-weight: bold"
+                return "color: #4ade80; font-weight: bold"
         except (TypeError, ValueError):
             pass
         return ""
@@ -1578,57 +1904,65 @@ def render_portfolio_analysis(df, is_realtime=False):
 
     # --- Performance Report Download ---
     if st.button("Generate Portfolio Performance Report", key=f"perf_report_btn{btn_key_suffix}"):
-        with st.spinner("Fetching performance metrics (this may take a moment)..."):
-            ticker_col = "Ticker" if "Ticker" in df.columns else None
-            name_col = "Name" if "Name" in df.columns else None
-            total_val = pd.to_numeric(df["Value"], errors="coerce").fillna(0).sum() if "Value" in df.columns else 0
+        _prog = st.progress(0, text="Preparing symbols…")
+        ticker_col = "Ticker" if "Ticker" in df.columns else None
+        name_col = "Name" if "Name" in df.columns else None
+        total_val = pd.to_numeric(df["Value"], errors="coerce").fillna(0).sum() if "Value" in df.columns else 0
 
-            sym_map = {}  # row_index -> yahoo_symbol
-            for idx, row in df.iterrows():
-                t = str(row.get(ticker_col, "") if ticker_col else "").strip()
-                n = str(row.get(name_col, "") if name_col else "").strip()
-                sym = normalize_realtime_quote_symbol(t, n)
-                sym_map[idx] = sym
+        sym_map = {}  # row_index -> yahoo_symbol
+        for idx, row in df.iterrows():
+            t = str(row.get(ticker_col, "") if ticker_col else "").strip()
+            n = str(row.get(name_col, "") if name_col else "").strip()
+            sym = normalize_realtime_quote_symbol(t, n)
+            sym_map[idx] = sym
 
-            unique_syms = tuple(s for s in dict.fromkeys(sym_map.values()) if s)
-            quotes = fetch_realtime_quotes(unique_syms)
-            perf   = fetch_performance_metrics(unique_syms)
+        unique_syms = tuple(s for s in dict.fromkeys(sym_map.values()) if s)
+        _prog.progress(10, text=f"Fetching real-time quotes for {len(unique_syms)} symbols…")
+        quotes = fetch_realtime_quotes(unique_syms)
+        _prog.progress(30, text=f"Fetching 10-year price history for {len(unique_syms)} symbols (this takes ~15–30 s)…")
+        perf   = fetch_performance_metrics(unique_syms)
+        _prog.progress(75, text=f"Building report rows for {len(df)} holdings…")
+        rows = []
+        for idx, row in df.iterrows():
+            sym = sym_map.get(idx)
+            q = quotes.get(sym, {}) if sym else {}
+            p = perf.get(sym, {}) if sym else {}
 
-            rows = []
-            for idx, row in df.iterrows():
-                sym = sym_map.get(idx)
-                q = quotes.get(sym, {}) if sym else {}
-                p = perf.get(sym, {}) if sym else {}
+            price  = q.get("price") or (pd.to_numeric(row.get("Price", None), errors="coerce") if "Price" in df.columns else None)
+            shares = pd.to_numeric(row.get("Shares", None), errors="coerce") if "Shares" in df.columns else None
+            value  = (shares * price) if (shares and price) else (pd.to_numeric(row.get("Value", None), errors="coerce") if "Value" in df.columns else None)
+            weight = (value / total_val * 100) if (value and total_val) else None
+            day_chg = (shares * q["change"]) if (shares and "change" in q) else None
+            day_chg_pct = q.get("change_percent") if q else None
 
-                price  = q.get("price") or (pd.to_numeric(row.get("Price", None), errors="coerce") if "Price" in df.columns else None)
-                shares = pd.to_numeric(row.get("Shares", None), errors="coerce") if "Shares" in df.columns else None
-                value  = (shares * price) if (shares and price) else (pd.to_numeric(row.get("Value", None), errors="coerce") if "Value" in df.columns else None)
-                weight = (value / total_val * 100) if (value and total_val) else None
-                day_chg = (shares * q["change"]) if (shares and "change" in q) else None
-                day_chg_pct = q.get("change_percent") if q else None
+            rows.append({
+                "Symbol":    str(row.get(ticker_col, "") if ticker_col else ""),
+                "Name":      str(row.get(name_col, "") if name_col else ""),
+                "Shares":    shares,
+                "Price":     price,
+                "Value":     value,
+                "Weight %":  weight,
+                "Day Chg $": day_chg,
+                "Day Chg %": day_chg_pct,
+                "30d %":     p.get("30d"),
+                "90d %":     p.get("90d"),
+                "180d %":    p.get("180d"),
+                "YTD %":     p.get("ytd"),
+                "1-Year %":  p.get("1y"),
+                "3-Yr Ann %": p.get("3y"),
+                "5-Yr Ann %": p.get("5y"),
+                "10-Yr Ann %": p.get("10y"),
+            })
 
-                rows.append({
-                    "Symbol":    str(row.get(ticker_col, "") if ticker_col else ""),
-                    "Name":      str(row.get(name_col, "") if name_col else ""),
-                    "Shares":    shares,
-                    "Price":     price,
-                    "Value":     value,
-                    "Weight %":  weight,
-                    "Day Chg $": day_chg,
-                    "Day Chg %": day_chg_pct,
-                    "YTD %":     p.get("ytd"),
-                    "1-Year %":  p.get("1y"),
-                    "3-Yr Ann %": p.get("3y"),
-                    "5-Yr Ann %": p.get("5y"),
-                    "10-Yr Ann %": p.get("10y"),
-                })
-
-            perf_df = pd.DataFrame(rows)
-            # Save report data to a temp JSON in the user dir
-            user_dir = ensure_user_dirs()
-            import datetime as _dt2
-            report_file = os.path.join(user_dir, f"perf_report_{_dt2.date.today().isoformat()}.json")
-            perf_df.to_json(report_file, orient="records")
+        _prog.progress(92, text="Saving report…")
+        perf_df = pd.DataFrame(rows)
+        # Save report data to a temp JSON in the user dir
+        user_dir = ensure_user_dirs()
+        import datetime as _dt2
+        report_file = os.path.join(user_dir, f"perf_report_{_dt2.date.today().isoformat()}.json")
+        perf_df.to_json(report_file, orient="records")
+        _prog.progress(100, text=f"Done — {len(rows)} holdings processed.")
+        _prog.empty()
 
         report_url = f"?report=1&report_file={quote_plus(report_file)}"
         st.markdown(
