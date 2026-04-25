@@ -580,8 +580,8 @@ def format_holdings_json_as_text(holdings_data):
 
     text += "HOLDINGS DETAIL:\n"
     text += "-" * 120 + "\n"
-    text += f"{'Ticker':<10} {'Name':<35} {'Shares':<12} {'Price':<12} {'Value':<15} {'1 Day %':<10} {'Type':<10}\n"
-    text += "-" * 120 + "\n"
+    text += f"{'Ticker':<10} {'Name':<35} {'Shares':<12} {'Price':<12} {'Value':<15} {'Type':<10}\n"
+    text += "-" * 100 + "\n"
 
     # Sort by value descending
     sorted_holdings = sorted(holdings, key=lambda x: x.get('Value', 0), reverse=True)
@@ -592,10 +592,9 @@ def format_holdings_json_as_text(holdings_data):
         shares = holding.get('Shares', 0)
         price = holding.get('Price', 0)
         value = holding.get('Value', 0)
-        day_pct = holding.get('1 Day %', '0.00%')
         htype = holding.get('Type', '')[:9]
 
-        text += f"{ticker:<10} {name:<35} {shares:<12.2f} ${price:<11.2f} ${value:<14,.2f} {day_pct:<10} {htype:<10}\n"
+        text += f"{ticker:<10} {name:<35} {shares:<12.2f} ${price:<11.2f} ${value:<14,.2f} {htype:<10}\n"
 
     return text
 
@@ -1091,6 +1090,7 @@ def process_file(file_path, extract_portfolio=True, save_csv=True):
     text_path = None
     morningstar_path = None
     report_path = None
+    raw_holdings_list = None  # pre-consolidation per-account rows
 
     if content_type == 'net_worth':
         # Process net worth data
@@ -1150,8 +1150,12 @@ def process_file(file_path, extract_portfolio=True, save_csv=True):
                 holdings_data = extract_portfolio_holdings_mht(extracted_text)
             elif file_type == 'json':
                 holdings_data = process_holdings_json(file_path)
-                # Consolidate holdings with the same ticker/name
+                # Capture raw (per-account) rows before consolidation only for
+                # detail-level files (e.g. holdings_detail_getHoldings_*.json)
+                _is_detail_file = "detail" in os.path.basename(file_path).lower()
                 if isinstance(holdings_data, dict) and 'holdings' in holdings_data:
+                    if _is_detail_file:
+                        raw_holdings_list = [dict(h) for h in holdings_data['holdings']]
                     holdings_data = consolidate_holdings(holdings_data)
 
             if isinstance(holdings_data, str) and holdings_data.startswith("Could not"):
@@ -1207,6 +1211,7 @@ def process_file(file_path, extract_portfolio=True, save_csv=True):
         "error": None,
         "text": extracted_text,
         "holdings": holdings_data,
+        "raw_holdings_list": raw_holdings_list,
         "csv_path": csv_path,
         "raw_data_path": raw_data_path,
         "text_path": text_path,
@@ -1446,7 +1451,288 @@ def build_realtime_holdings_dataframe(csv_path):
     }
 
 
-def build_performance_excel(perf_df):
+def build_holdings_excel(csv_path, raw_holdings_list=None, stats=None):
+    """Build a formatted Excel workbook from a holdings CSV and return BytesIO.
+
+    Sheet 1 – Holdings: consolidated summary (one row per ticker).
+    Sheet 2 – Holdings Details: one row per ticker per account (pre-consolidation).
+    Sheet 3 – Portfolio Statistics: key metrics, allocation, and tax-status breakdown.
+    """
+    import io as _io
+    buf = _io.BytesIO()
+    df = pd.read_csv(csv_path)
+
+    # Numeric coercion for value/shares/price columns
+    for col in ["Value", "Shares", "Price", "Value_numeric"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Use Value_numeric if present, otherwise Value
+    if "Value_numeric" in df.columns and "Value" not in df.columns:
+        df = df.rename(columns={"Value_numeric": "Value"})
+    elif "Value_numeric" in df.columns:
+        df["Value"] = df["Value_numeric"].combine_first(df["Value"])
+        df = df.drop(columns=["Value_numeric"])
+
+    # Sort by value descending
+    if "Value" in df.columns:
+        df = df.sort_values("Value", ascending=False, na_position="last").reset_index(drop=True)
+
+    # Build details DataFrame from raw per-account holdings
+    detail_df = None
+    if raw_holdings_list:
+        detail_df = pd.DataFrame(raw_holdings_list)
+        drop_cols = [c for c in ["Change", "1 Day %", "1 day $", "_accounts", "_value_for_price_calc"] if c in detail_df.columns]
+        if drop_cols:
+            detail_df = detail_df.drop(columns=drop_cols)
+        for col in ["Value", "Shares", "Price", "Cost Basis"]:
+            if col in detail_df.columns:
+                detail_df[col] = pd.to_numeric(detail_df[col], errors="coerce")
+        # Preferred column order for details sheet
+        detail_pref = ["Account", "Ticker", "Name", "Shares", "Price", "Value", "Type", "CUSIP", "Cost Basis", "Exchange", "Category"]
+        detail_cols = [c for c in detail_pref if c in detail_df.columns] + \
+                      [c for c in detail_df.columns if c not in detail_pref]
+        detail_df = detail_df[detail_cols]
+        if "Value" in detail_df.columns:
+            detail_df = detail_df.sort_values(["Account", "Value"], ascending=[True, False], na_position="last").reset_index(drop=True)
+
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False, sheet_name="Holdings")
+        wb = writer.book
+
+        # ── shared formats ────────────────────────────────────────────────────
+        hdr_fmt = wb.add_format({
+            "bold": True, "bg_color": "#252A40", "font_color": "#C5CAE8",
+            "border": 1, "align": "center", "valign": "vcenter", "text_wrap": True,
+        })
+        currency_fmt = wb.add_format({"num_format": "$#,##0.00", "border": 1, "valign": "vcenter"})
+        num_fmt      = wb.add_format({"num_format": "#,##0.00",  "border": 1, "valign": "vcenter"})
+        text_fmt     = wb.add_format({"border": 1, "valign": "vcenter"})
+        pos_fmt      = wb.add_format({"bg_color": "#0d2b1a", "font_color": "#4ade80",
+                                       "num_format": "$#,##0.00", "border": 1, "valign": "vcenter"})
+        acct_fmt     = wb.add_format({"bold": True, "bg_color": "#1A1A2E", "font_color": "#C5CAE8",
+                                       "border": 1, "valign": "vcenter"})
+
+        col_widths = {"Ticker": 10, "Symbol": 10, "Name": 35, "Shares": 12,
+                      "Price": 13, "Value": 15, "Type": 14, "Account": 24,
+                      "Category": 20, "CUSIP": 14, "Cost Basis": 14, "Exchange": 12}
+
+        currency_cols = {"Value", "Price", "Cost Basis"}
+        number_cols   = {"Shares"}
+
+        def _write_sheet(ws, frame):
+            COLS = list(frame.columns)
+            for ci, col in enumerate(COLS):
+                ws.write(0, ci, col, hdr_fmt)
+            for ri, row_vals in enumerate(frame.itertuples(index=False), start=1):
+                for ci, col in enumerate(COLS):
+                    val = row_vals[ci]
+                    is_none = val is None or (isinstance(val, float) and np.isnan(val))
+                    if is_none:
+                        ws.write(ri, ci, "", text_fmt)
+                    elif col in currency_cols:
+                        ws.write_number(ri, ci, float(val), pos_fmt if col == "Value" else currency_fmt)
+                    elif col in number_cols:
+                        ws.write_number(ri, ci, float(val), num_fmt)
+                    else:
+                        ws.write(ri, ci, val, text_fmt)
+            for ci, col in enumerate(COLS):
+                ws.set_column(ci, ci, col_widths.get(col, 14))
+            ws.freeze_panes(1, 0)
+            ws.set_row(0, 22)
+
+        # ── Sheet 1: Holdings (consolidated) ─────────────────────────────────
+        _write_sheet(writer.sheets["Holdings"], df)
+
+        # ── Sheet 2: Holdings Details (per account) ───────────────────────────
+        if detail_df is not None and not detail_df.empty:
+            detail_df.to_excel(writer, index=False, sheet_name="Holdings Details")
+            dws = writer.sheets["Holdings Details"]
+            DCOLS = list(detail_df.columns)
+            acct_ci = DCOLS.index("Account") if "Account" in DCOLS else None
+
+            for ci, col in enumerate(DCOLS):
+                dws.write(0, ci, col, hdr_fmt)
+
+            prev_acct = None
+            for ri, row_vals in enumerate(detail_df.itertuples(index=False), start=1):
+                cur_acct = row_vals[acct_ci] if acct_ci is not None else None
+                for ci, col in enumerate(DCOLS):
+                    val = row_vals[ci]
+                    is_none = val is None or (isinstance(val, float) and np.isnan(val))
+                    # Use accent format for Account column when it changes
+                    use_acct_fmt = (col == "Account" and cur_acct != prev_acct)
+                    if is_none:
+                        dws.write(ri, ci, "", acct_fmt if use_acct_fmt else text_fmt)
+                    elif col in currency_cols:
+                        dws.write_number(ri, ci, float(val), pos_fmt if col == "Value" else currency_fmt)
+                    elif col in number_cols:
+                        dws.write_number(ri, ci, float(val), num_fmt)
+                    else:
+                        dws.write(ri, ci, val, acct_fmt if use_acct_fmt else text_fmt)
+                prev_acct = cur_acct
+
+            for ci, col in enumerate(DCOLS):
+                dws.set_column(ci, ci, col_widths.get(col, 14))
+            dws.freeze_panes(1, 0)
+            dws.set_row(0, 22)
+
+        # ── Sheet 3: Portfolio Statistics ─────────────────────────────────────
+        if stats and 'error' not in stats:
+            st_ws = wb.add_worksheet("Portfolio Statistics")
+            st_ws.set_zoom(110)
+            st_ws.set_column(0, 0, 32)   # label column
+            st_ws.set_column(1, 1, 20)   # value column
+            st_ws.set_column(2, 2, 18)   # extra column
+
+            sec_fmt  = wb.add_format({"bold": True, "bg_color": "#1A1A2E", "font_color": "#C5CAE8",
+                                       "border": 1, "font_size": 11, "valign": "vcenter"})
+            lbl_fmt  = wb.add_format({"bg_color": "#252A40", "font_color": "#C5CAE8",
+                                       "border": 1, "valign": "vcenter"})
+            val_fmt  = wb.add_format({"border": 1, "valign": "vcenter"})
+            cur_fmt  = wb.add_format({"num_format": "$#,##0.00", "border": 1, "valign": "vcenter"})
+            pct_fmt  = wb.add_format({"num_format": "0.00%", "border": 1, "valign": "vcenter"})
+            pct1_fmt = wb.add_format({"num_format": "0.0%", "border": 1, "valign": "vcenter"})
+            num2_fmt = wb.add_format({"num_format": "#,##0.00", "border": 1, "valign": "vcenter"})
+            col_hdr  = wb.add_format({"bold": True, "bg_color": "#252A40", "font_color": "#C5CAE8",
+                                       "border": 1, "align": "center", "valign": "vcenter"})
+            # Coloured tax-status labels
+            tax_fmt = {
+                "Taxable":           wb.add_format({"bold": True, "bg_color": "#1e3a5f", "font_color": "#93C5FD", "border": 1, "valign": "vcenter"}),
+                "Tax-Deferred":      wb.add_format({"bold": True, "bg_color": "#451a03", "font_color": "#FCD34D", "border": 1, "valign": "vcenter"}),
+                "Tax-Exempt (Roth)": wb.add_format({"bold": True, "bg_color": "#052e16", "font_color": "#6EE7B7", "border": 1, "valign": "vcenter"}),
+            }
+
+            row = 0
+
+            def _section(title):
+                nonlocal row
+                st_ws.merge_range(row, 0, row, 2, title, sec_fmt)
+                st_ws.set_row(row, 18)
+                row += 1
+
+            def _kv(label, value, fmt=val_fmt):
+                nonlocal row
+                st_ws.write(row, 0, label, lbl_fmt)
+                if fmt in (cur_fmt, pct_fmt, pct1_fmt, num2_fmt) and value is not None:
+                    try:
+                        st_ws.write_number(row, 1, float(value), fmt)
+                    except (TypeError, ValueError):
+                        st_ws.write(row, 1, value, val_fmt)
+                else:
+                    st_ws.write(row, 1, value, fmt)
+                st_ws.write(row, 2, "", val_fmt)
+                row += 1
+
+            # ── Summary ───────────────────────────────────────────────────────
+            _section("Summary Statistics")
+            _kv("Total Value",        stats.get("total_value"),   cur_fmt)
+            _kv("Holdings Count",     stats.get("count"),         val_fmt)
+            _kv("Average Value",      stats.get("avg_value"),     cur_fmt)
+            _kv("Median Value",       stats.get("median_value"),  cur_fmt)
+            _kv("Largest Holding",    stats.get("max_value"),     cur_fmt)
+            _kv("Smallest Holding",   stats.get("min_value"),     cur_fmt)
+            _kv("Value Range",        stats.get("value_range"),   cur_fmt)
+            _kv("Standard Deviation", stats.get("std_dev"),       cur_fmt)
+            row += 1
+
+            # ── Concentration ─────────────────────────────────────────────────
+            _section("Portfolio Concentration")
+            top5  = stats.get("top_5_pct")
+            top10 = stats.get("top_10_pct")
+            _kv("Top 5 Holdings %",  (top5 / 100) if top5 is not None else None,   pct_fmt)
+            _kv("Top 10 Holdings %", (top10 / 100) if top10 is not None else None, pct_fmt)
+            _kv("HHI Score",         stats.get("hhi"),            num2_fmt)
+            _kv("Concentration",     stats.get("concentration"),  val_fmt)
+            row += 1
+
+            # ── Top Holdings ──────────────────────────────────────────────────
+            if "holdings_pct" in stats:
+                _section("Top 10 Holdings")
+                st_ws.write(row, 0, "Name",  col_hdr)
+                st_ws.write(row, 1, "Symbol", col_hdr)
+                st_ws.write(row, 2, "% of Portfolio", col_hdr)
+                row += 1
+                for _, hr in stats["holdings_pct"].head(10).iterrows():
+                    st_ws.write(row, 0, hr.get("Name", ""), val_fmt)
+                    st_ws.write(row, 1, hr.get("Symbol", ""), val_fmt)
+                    _pct = hr.get("pct_of_total")
+                    try:
+                        st_ws.write_number(row, 2, float(_pct) / 100, pct1_fmt)
+                    except (TypeError, ValueError):
+                        st_ws.write(row, 2, "", val_fmt)
+                    row += 1
+                row += 1
+
+            # ── Asset Allocation ──────────────────────────────────────────────
+            if "asset_allocation" in stats and not stats["asset_allocation"].empty:
+                _section("Asset Allocation (by Category)")
+                st_ws.write(row, 0, "Category",       col_hdr)
+                st_ws.write(row, 1, "Value",           col_hdr)
+                st_ws.write(row, 2, "% of Portfolio",  col_hdr)
+                row += 1
+                _tot = stats.get("total_value", 1) or 1
+                for _, ar in stats["asset_allocation"].iterrows():
+                    st_ws.write(row, 0, ar.get("Category", ""), val_fmt)
+                    _v = ar.get("Value_numeric") if "Value_numeric" in ar.index else None
+                    if _v is None:
+                        _v = float(ar.get("pct_of_total", 0)) / 100 * _tot
+                    try:
+                        st_ws.write_number(row, 1, float(_v), cur_fmt)
+                    except (TypeError, ValueError):
+                        st_ws.write(row, 1, "", val_fmt)
+                    _ap = ar.get("pct_of_total")
+                    try:
+                        st_ws.write_number(row, 2, float(_ap) / 100, pct1_fmt)
+                    except (TypeError, ValueError):
+                        st_ws.write(row, 2, "", val_fmt)
+                    row += 1
+                row += 1
+
+            # ── Tax-Status Allocation ─────────────────────────────────────────
+            if "tax_allocation" in stats and not stats["tax_allocation"].empty:
+                _section("Tax-Status Allocation")
+                st_ws.write(row, 0, "Tax Status",      col_hdr)
+                st_ws.write(row, 1, "Value",           col_hdr)
+                st_ws.write(row, 2, "% of Portfolio",  col_hdr)
+                row += 1
+                for _, tr in stats["tax_allocation"].iterrows():
+                    _ts = tr.get("Tax Status", "")
+                    _tfmt = tax_fmt.get(_ts, lbl_fmt)
+                    st_ws.write(row, 0, _ts, _tfmt)
+                    try:
+                        st_ws.write_number(row, 1, float(tr["Value"]), cur_fmt)
+                    except (TypeError, ValueError):
+                        st_ws.write(row, 1, "", val_fmt)
+                    try:
+                        st_ws.write_number(row, 2, float(tr["% of Portfolio"]) / 100, pct1_fmt)
+                    except (TypeError, ValueError):
+                        st_ws.write(row, 2, "", val_fmt)
+                    row += 1
+                row += 1
+
+                if "tax_allocation_by_account" in stats and not stats["tax_allocation_by_account"].empty:
+                    _section("Tax-Status Allocation — By Account")
+                    st_ws.write(row, 0, "Account",         col_hdr)
+                    st_ws.write(row, 1, "Tax Status",      col_hdr)
+                    st_ws.write(row, 2, "% of Portfolio",  col_hdr)
+                    row += 1
+                    for _, ab in stats["tax_allocation_by_account"].iterrows():
+                        _ts = ab.get("Tax Status", "")
+                        _tfmt = tax_fmt.get(_ts, val_fmt)
+                        st_ws.write(row, 0, ab.get("Account", ""), val_fmt)
+                        st_ws.write(row, 1, _ts, _tfmt)
+                        try:
+                            st_ws.write_number(row, 2, float(ab["% of Portfolio"]) / 100, pct1_fmt)
+                        except (TypeError, ValueError):
+                            st_ws.write(row, 2, "", val_fmt)
+                        row += 1
+
+    buf.seek(0)
+    return buf
+
+
+def build_performance_excel(perf_df, holdings_df=None, detail_df=None, stats=None):
     """Build and return a formatted Excel workbook as BytesIO for the performance report."""
     import io as _io
     from xlsxwriter.utility import xl_col_to_name
@@ -1646,6 +1932,202 @@ def build_performance_excel(perf_df):
                     _blk, _pct_set, score_col="Momentum Score"
                 )
 
+        # ── Holdings sheet (consolidated) ─────────────────────────────────────
+        if holdings_df is not None and not holdings_df.empty:
+            _h_col_widths = {"Ticker": 10, "Symbol": 10, "Name": 35, "Shares": 12,
+                             "Price": 13, "Value": 15, "Type": 14, "Account": 24,
+                             "Category": 20, "CUSIP": 14, "Cost Basis": 14, "Exchange": 12}
+            _h_currency_cols = {"Value", "Price", "Cost Basis"}
+            _h_number_cols   = {"Shares"}
+
+            _h_hdr_fmt = wb.add_format({
+                "bold": True, "bg_color": "#252A40", "font_color": "#C5CAE8",
+                "border": 1, "align": "center", "valign": "vcenter", "text_wrap": True,
+            })
+            _h_currency_fmt = wb.add_format({"num_format": "$#,##0.00", "border": 1, "valign": "vcenter"})
+            _h_num_fmt      = wb.add_format({"num_format": "#,##0.00",  "border": 1, "valign": "vcenter"})
+            _h_text_fmt     = wb.add_format({"border": 1, "valign": "vcenter"})
+            _h_pos_fmt      = wb.add_format({"bg_color": "#0d2b1a", "font_color": "#4ade80",
+                                             "num_format": "$#,##0.00", "border": 1, "valign": "vcenter"})
+            _h_acct_fmt     = wb.add_format({"bold": True, "bg_color": "#1A1A2E", "font_color": "#C5CAE8",
+                                             "border": 1, "valign": "vcenter"})
+
+            def _write_holdings_sheet(ws_obj, frame, with_acct_highlight=False):
+                HCOLS = list(frame.columns)
+                acct_ci = HCOLS.index("Account") if "Account" in HCOLS else None
+                for ci, col in enumerate(HCOLS):
+                    ws_obj.write(0, ci, col, _h_hdr_fmt)
+                prev_acct = None
+                for ri, row_vals in enumerate(frame.itertuples(index=False), start=1):
+                    cur_acct = row_vals[acct_ci] if acct_ci is not None else None
+                    for ci, col in enumerate(HCOLS):
+                        val = row_vals[ci]
+                        is_none = val is None or (isinstance(val, float) and np.isnan(val))
+                        use_acct = with_acct_highlight and col == "Account" and cur_acct != prev_acct
+                        if is_none:
+                            ws_obj.write(ri, ci, "", _h_acct_fmt if use_acct else _h_text_fmt)
+                        elif col in _h_currency_cols:
+                            ws_obj.write_number(ri, ci, float(val), _h_pos_fmt if col == "Value" else _h_currency_fmt)
+                        elif col in _h_number_cols:
+                            ws_obj.write_number(ri, ci, float(val), _h_num_fmt)
+                        else:
+                            ws_obj.write(ri, ci, val, _h_acct_fmt if use_acct else _h_text_fmt)
+                    prev_acct = cur_acct
+                for ci, col in enumerate(HCOLS):
+                    ws_obj.set_column(ci, ci, _h_col_widths.get(col, 14))
+                ws_obj.freeze_panes(1, 0)
+                ws_obj.set_row(0, 22)
+
+            holdings_df.to_excel(writer, index=False, sheet_name="Holdings")
+            _write_holdings_sheet(writer.sheets["Holdings"], holdings_df, with_acct_highlight=False)
+
+        # ── Holdings Details sheet (per-account) ──────────────────────────────
+        if detail_df is not None and not detail_df.empty:
+            detail_df.to_excel(writer, index=False, sheet_name="Holdings Details")
+            _write_holdings_sheet(writer.sheets["Holdings Details"], detail_df, with_acct_highlight=True)
+
+        # ── Portfolio Statistics sheet ─────────────────────────────────────────
+        if stats and "error" not in stats:
+            _ps_ws = wb.add_worksheet("Portfolio Statistics")
+            _ps_ws.set_zoom(110)
+            _ps_ws.set_column(0, 0, 32)
+            _ps_ws.set_column(1, 1, 20)
+            _ps_ws.set_column(2, 2, 18)
+
+            _ps_sec  = wb.add_format({"bold": True, "bg_color": "#1A1A2E", "font_color": "#C5CAE8",
+                                       "border": 1, "font_size": 11, "valign": "vcenter"})
+            _ps_lbl  = wb.add_format({"bg_color": "#252A40", "font_color": "#C5CAE8",
+                                       "border": 1, "valign": "vcenter"})
+            _ps_val  = wb.add_format({"border": 1, "valign": "vcenter"})
+            _ps_cur  = wb.add_format({"num_format": "$#,##0.00", "border": 1, "valign": "vcenter"})
+            _ps_pct  = wb.add_format({"num_format": "0.00%", "border": 1, "valign": "vcenter"})
+            _ps_pct1 = wb.add_format({"num_format": "0.0%",  "border": 1, "valign": "vcenter"})
+            _ps_num2 = wb.add_format({"num_format": "#,##0.00", "border": 1, "valign": "vcenter"})
+            _ps_chdr = wb.add_format({"bold": True, "bg_color": "#252A40", "font_color": "#C5CAE8",
+                                       "border": 1, "align": "center", "valign": "vcenter"})
+            _ps_tax_fmt = {
+                "Taxable":           wb.add_format({"bold": True, "bg_color": "#1e3a5f", "font_color": "#93C5FD", "border": 1, "valign": "vcenter"}),
+                "Tax-Deferred":      wb.add_format({"bold": True, "bg_color": "#451a03", "font_color": "#FCD34D", "border": 1, "valign": "vcenter"}),
+                "Tax-Exempt (Roth)": wb.add_format({"bold": True, "bg_color": "#052e16", "font_color": "#6EE7B7", "border": 1, "valign": "vcenter"}),
+            }
+
+            _ps_row = 0
+
+            def _ps_section(title):
+                nonlocal _ps_row
+                _ps_ws.merge_range(_ps_row, 0, _ps_row, 2, title, _ps_sec)
+                _ps_ws.set_row(_ps_row, 18)
+                _ps_row += 1
+
+            def _ps_kv(label, value, fmt=None):
+                nonlocal _ps_row
+                _fmt = fmt or _ps_val
+                _ps_ws.write(_ps_row, 0, label, _ps_lbl)
+                if _fmt in (_ps_cur, _ps_pct, _ps_pct1, _ps_num2) and value is not None:
+                    try:
+                        _ps_ws.write_number(_ps_row, 1, float(value), _fmt)
+                    except (TypeError, ValueError):
+                        _ps_ws.write(_ps_row, 1, value, _ps_val)
+                else:
+                    _ps_ws.write(_ps_row, 1, value, _fmt)
+                _ps_ws.write(_ps_row, 2, "", _ps_val)
+                _ps_row += 1
+
+            _ps_section("Summary Statistics (prices updated by yfinance)")
+            _ps_kv("Total Value",        stats.get("total_value"),  _ps_cur)
+            _ps_kv("Holdings Count",     stats.get("count"),        _ps_val)
+            _ps_kv("Average Value",      stats.get("avg_value"),    _ps_cur)
+            _ps_kv("Median Value",       stats.get("median_value"), _ps_cur)
+            _ps_kv("Largest Holding",    stats.get("max_value"),    _ps_cur)
+            _ps_kv("Smallest Holding",   stats.get("min_value"),    _ps_cur)
+            _ps_kv("Value Range",        stats.get("value_range"),  _ps_cur)
+            _ps_kv("Standard Deviation", stats.get("std_dev"),      _ps_cur)
+            _ps_row += 1
+
+            _ps_section("Portfolio Concentration")
+            _top5  = stats.get("top_5_pct")
+            _top10 = stats.get("top_10_pct")
+            _ps_kv("Top 5 Holdings %",  (_top5  / 100) if _top5  is not None else None, _ps_pct)
+            _ps_kv("Top 10 Holdings %", (_top10 / 100) if _top10 is not None else None, _ps_pct)
+            _ps_kv("HHI Score",         stats.get("hhi"),           _ps_num2)
+            _ps_kv("Concentration",     stats.get("concentration"), _ps_val)
+            _ps_row += 1
+
+            if "holdings_pct" in stats:
+                _ps_section("Top 10 Holdings")
+                _ps_ws.write(_ps_row, 0, "Name",           _ps_chdr)
+                _ps_ws.write(_ps_row, 1, "Symbol",         _ps_chdr)
+                _ps_ws.write(_ps_row, 2, "% of Portfolio", _ps_chdr)
+                _ps_row += 1
+                for _, _hr in stats["holdings_pct"].head(10).iterrows():
+                    _ps_ws.write(_ps_row, 0, _hr.get("Name",   ""), _ps_val)
+                    _ps_ws.write(_ps_row, 1, _hr.get("Symbol", ""), _ps_val)
+                    try:
+                        _ps_ws.write_number(_ps_row, 2, float(_hr.get("pct_of_total", 0)) / 100, _ps_pct1)
+                    except (TypeError, ValueError):
+                        _ps_ws.write(_ps_row, 2, "", _ps_val)
+                    _ps_row += 1
+                _ps_row += 1
+
+            if "asset_allocation" in stats and not stats["asset_allocation"].empty:
+                _ps_section("Asset Allocation (by Category)")
+                _ps_ws.write(_ps_row, 0, "Category",       _ps_chdr)
+                _ps_ws.write(_ps_row, 1, "Value",          _ps_chdr)
+                _ps_ws.write(_ps_row, 2, "% of Portfolio", _ps_chdr)
+                _ps_row += 1
+                _tot_v = stats.get("total_value", 1) or 1
+                for _, _ar in stats["asset_allocation"].iterrows():
+                    _ps_ws.write(_ps_row, 0, _ar.get("Category", ""), _ps_val)
+                    _av = _ar.get("Value_numeric") if "Value_numeric" in _ar.index else None
+                    if _av is None:
+                        _av = float(_ar.get("pct_of_total", 0)) / 100 * _tot_v
+                    try:
+                        _ps_ws.write_number(_ps_row, 1, float(_av), _ps_cur)
+                    except (TypeError, ValueError):
+                        _ps_ws.write(_ps_row, 1, "", _ps_val)
+                    try:
+                        _ps_ws.write_number(_ps_row, 2, float(_ar.get("pct_of_total", 0)) / 100, _ps_pct1)
+                    except (TypeError, ValueError):
+                        _ps_ws.write(_ps_row, 2, "", _ps_val)
+                    _ps_row += 1
+                _ps_row += 1
+
+            if "tax_allocation" in stats and not stats["tax_allocation"].empty:
+                _ps_section("Tax-Status Allocation")
+                _ps_ws.write(_ps_row, 0, "Tax Status",     _ps_chdr)
+                _ps_ws.write(_ps_row, 1, "Value",          _ps_chdr)
+                _ps_ws.write(_ps_row, 2, "% of Portfolio", _ps_chdr)
+                _ps_row += 1
+                for _, _tr in stats["tax_allocation"].iterrows():
+                    _ts = _tr.get("Tax Status", "")
+                    _ps_ws.write(_ps_row, 0, _ts, _ps_tax_fmt.get(_ts, _ps_lbl))
+                    try:
+                        _ps_ws.write_number(_ps_row, 1, float(_tr["Value"]), _ps_cur)
+                    except (TypeError, ValueError):
+                        _ps_ws.write(_ps_row, 1, "", _ps_val)
+                    try:
+                        _ps_ws.write_number(_ps_row, 2, float(_tr["% of Portfolio"]) / 100, _ps_pct1)
+                    except (TypeError, ValueError):
+                        _ps_ws.write(_ps_row, 2, "", _ps_val)
+                    _ps_row += 1
+                _ps_row += 1
+
+                if "tax_allocation_by_account" in stats and not stats["tax_allocation_by_account"].empty:
+                    _ps_section("Tax-Status Allocation — By Account")
+                    _ps_ws.write(_ps_row, 0, "Account",        _ps_chdr)
+                    _ps_ws.write(_ps_row, 1, "Tax Status",     _ps_chdr)
+                    _ps_ws.write(_ps_row, 2, "% of Portfolio", _ps_chdr)
+                    _ps_row += 1
+                    for _, _ab in stats["tax_allocation_by_account"].iterrows():
+                        _ts = _ab.get("Tax Status", "")
+                        _ps_ws.write(_ps_row, 0, _ab.get("Account", ""), _ps_val)
+                        _ps_ws.write(_ps_row, 1, _ts, _ps_tax_fmt.get(_ts, _ps_val))
+                        try:
+                            _ps_ws.write_number(_ps_row, 2, float(_ab["% of Portfolio"]) / 100, _ps_pct1)
+                        except (TypeError, ValueError):
+                            _ps_ws.write(_ps_row, 2, "", _ps_val)
+                        _ps_row += 1
+
     buf.seek(0)
     return buf
 
@@ -1718,10 +2200,10 @@ def render_performance_report_dashboard(report_file):
         _col_b0, _col_w0 = st.columns(2)
         with _col_b0:
             st.markdown("**Top 5 – 30-Day Return**")
-            st.dataframe(_hl_table(_30d_valid.nlargest(5, "30d %"), "30d %"), hide_index=True, use_container_width=True)
+            st.dataframe(_hl_table(_30d_valid.nlargest(5, "30d %"), "30d %"), hide_index=True, width="stretch")
         with _col_w0:
             st.markdown("**Bottom 5 – 30-Day Return**")
-            st.dataframe(_hl_table(_30d_valid.nsmallest(5, "30d %"), "30d %"), hide_index=True, use_container_width=True)
+            st.dataframe(_hl_table(_30d_valid.nsmallest(5, "30d %"), "30d %"), hide_index=True, width="stretch")
 
     # Best / Worst performers – 90d
     if "90d %" in _hl_df.columns:
@@ -1729,10 +2211,10 @@ def render_performance_report_dashboard(report_file):
         _col_b00, _col_w00 = st.columns(2)
         with _col_b00:
             st.markdown("**Top 5 – 90-Day Return**")
-            st.dataframe(_hl_table(_90d_valid.nlargest(5, "90d %"), "90d %"), hide_index=True, use_container_width=True)
+            st.dataframe(_hl_table(_90d_valid.nlargest(5, "90d %"), "90d %"), hide_index=True, width="stretch")
         with _col_w00:
             st.markdown("**Bottom 5 – 90-Day Return**")
-            st.dataframe(_hl_table(_90d_valid.nsmallest(5, "90d %"), "90d %"), hide_index=True, use_container_width=True)
+            st.dataframe(_hl_table(_90d_valid.nsmallest(5, "90d %"), "90d %"), hide_index=True, width="stretch")
 
     # Best / Worst performers – 180d
     if "180d %" in _hl_df.columns:
@@ -1740,10 +2222,10 @@ def render_performance_report_dashboard(report_file):
         _col_b180, _col_w180 = st.columns(2)
         with _col_b180:
             st.markdown("**Top 5 – 180-Day Return**")
-            st.dataframe(_hl_table(_180d_valid.nlargest(5, "180d %"), "180d %"), hide_index=True, use_container_width=True)
+            st.dataframe(_hl_table(_180d_valid.nlargest(5, "180d %"), "180d %"), hide_index=True, width="stretch")
         with _col_w180:
             st.markdown("**Bottom 5 – 180-Day Return**")
-            st.dataframe(_hl_table(_180d_valid.nsmallest(5, "180d %"), "180d %"), hide_index=True, use_container_width=True)
+            st.dataframe(_hl_table(_180d_valid.nsmallest(5, "180d %"), "180d %"), hide_index=True, width="stretch")
 
     # Best / Worst performers – YTD
     if "YTD %" in _hl_df.columns:
@@ -1754,10 +2236,10 @@ def render_performance_report_dashboard(report_file):
         _col_b, _col_w = st.columns(2)
         with _col_b:
             st.markdown("**Top 5 – YTD Return**")
-            st.dataframe(_hl_table(_best_ytd, "YTD %"), hide_index=True, use_container_width=True)
+            st.dataframe(_hl_table(_best_ytd, "YTD %"), hide_index=True, width="stretch")
         with _col_w:
             st.markdown("**Bottom 5 – YTD Return**")
-            st.dataframe(_hl_table(_worst_ytd, "YTD %"), hide_index=True, use_container_width=True)
+            st.dataframe(_hl_table(_worst_ytd, "YTD %"), hide_index=True, width="stretch")
 
     # Best / Worst performers – 1-Year
     if "1-Year %" in _hl_df.columns:
@@ -1768,10 +2250,10 @@ def render_performance_report_dashboard(report_file):
         _col_b2, _col_w2 = st.columns(2)
         with _col_b2:
             st.markdown("**Top 5 – 1-Year Return**")
-            st.dataframe(_hl_table(_best_1y, "1-Year %"), hide_index=True, use_container_width=True)
+            st.dataframe(_hl_table(_best_1y, "1-Year %"), hide_index=True, width="stretch")
         with _col_w2:
             st.markdown("**Bottom 5 – 1-Year Return**")
-            st.dataframe(_hl_table(_worst_1y, "1-Year %"), hide_index=True, use_container_width=True)
+            st.dataframe(_hl_table(_worst_1y, "1-Year %"), hide_index=True, width="stretch")
 
     # Momentum – composite score weighted toward recent periods
     # 30d is intentionally low-weight (noise filter); 90d+180d carry the medium-term signal
@@ -1814,9 +2296,9 @@ def render_performance_report_dashboard(report_file):
 
         _mom_label = "*(weighted: 10% 30d · 25% 90d · 30% 180d · 20% YTD · 10% 1-Year · 3% 3-Year · 2% 5-Year)*"
         st.markdown(f"**Top 10 – Momentum** {_mom_label}")
-        st.dataframe(_fmt_mom_df(_mom_top).style.map(_mom_clr, subset=["Momentum Score"]), hide_index=True, use_container_width=True)
+        st.dataframe(_fmt_mom_df(_mom_top).style.map(_mom_clr, subset=["Momentum Score"]), hide_index=True, width="stretch")
         st.markdown(f"**Bottom 10 – Momentum** {_mom_label}")
-        st.dataframe(_fmt_mom_df(_mom_bot).style.map(_mom_clr, subset=["Momentum Score"]), hide_index=True, use_container_width=True)
+        st.dataframe(_fmt_mom_df(_mom_bot).style.map(_mom_clr, subset=["Momentum Score"]), hide_index=True, width="stretch")
 
     st.divider()
 
@@ -1869,12 +2351,100 @@ def render_performance_report_dashboard(report_file):
     if "Day Chg %" in disp.columns:
         style = style.map(_colour_pct, subset=["Day Chg %"])
 
-    st.dataframe(style, hide_index=True, use_container_width=True)
+    st.dataframe(style, hide_index=True, width="stretch")
 
     st.divider()
 
+    # ── Price map from perf_df (yfinance-updated prices) ─────────────────────
+    _price_map = {}
+    if "Symbol" in perf_df.columns and "Price" in perf_df.columns:
+        for _, _pr in perf_df[["Symbol", "Price"]].iterrows():
+            _sym = str(_pr["Symbol"]).strip().upper()
+            _p   = _pr["Price"]
+            if _sym and _p is not None and not (isinstance(_p, float) and np.isnan(_p)):
+                _price_map[_sym] = float(_p)
+
+    def _apply_price_map(frame):
+        """Overwrite Price with updated yfinance prices and recalculate Value = Shares × Price."""
+        if frame is None or frame.empty or not _price_map:
+            return frame
+        _tc = next((c for c in ["Ticker", "Symbol"] if c in frame.columns), None)
+        if not _tc:
+            return frame
+        frame = frame.copy()
+        for _c in ["Shares", "Price", "Value"]:
+            if _c in frame.columns:
+                frame[_c] = pd.to_numeric(frame[_c], errors="coerce")
+        _new_prices = frame[_tc].apply(
+            lambda t: _price_map.get(str(t).strip().upper()) if pd.notna(t) else None
+        )
+        _mask = _new_prices.notna()
+        if _mask.any():
+            frame.loc[_mask, "Price"] = _new_prices[_mask]
+        if "Shares" in frame.columns and "Price" in frame.columns:
+            _new_val = frame["Shares"] * frame["Price"]
+            frame.loc[_new_val.notna(), "Value"] = _new_val[_new_val.notna()]
+        return frame
+
+    # ── Load holdings sidecar (saved alongside the perf report JSON) ──────────
+    _holdings_df = None
+    _detail_df   = None
+    _sidecar_path = report_file.replace(".json", "_holdings.json")
+    if os.path.exists(_sidecar_path):
+        try:
+            import json as _json2
+            with open(_sidecar_path, "r", encoding="utf-8") as _sf:
+                _sc = _json2.load(_sf)
+            if _sc.get("holdings"):
+                _holdings_df = _apply_price_map(pd.DataFrame(_sc["holdings"]))
+            if _sc.get("raw_holdings_list"):
+                _raw = _sc["raw_holdings_list"]
+                _detail_df = pd.DataFrame(_raw)
+                _drop = [c for c in ["Change", "1 Day %", "1 day $", "_accounts", "_value_for_price_calc"] if c in _detail_df.columns]
+                if _drop:
+                    _detail_df = _detail_df.drop(columns=_drop)
+                for _col in ["Value", "Shares", "Price", "Cost Basis"]:
+                    if _col in _detail_df.columns:
+                        _detail_df[_col] = pd.to_numeric(_detail_df[_col], errors="coerce")
+                _detail_df = _apply_price_map(_detail_df)
+                _dpref = ["Account", "Ticker", "Name", "Shares", "Price", "Value", "Type", "CUSIP", "Cost Basis", "Exchange", "Category"]
+                _dcols = [c for c in _dpref if c in _detail_df.columns] + \
+                         [c for c in _detail_df.columns if c not in _dpref]
+                _detail_df = _detail_df[_dcols]
+                if "Value" in _detail_df.columns:
+                    _detail_df = _detail_df.sort_values(["Account", "Value"], ascending=[True, False], na_position="last").reset_index(drop=True)
+        except Exception:
+            pass
+
     # ── Excel download ────────────────────────────────────────────────────────
-    excel_buf = build_performance_excel(perf_df)
+    # Build stats for the Portfolio Statistics sheet using the best available
+    # price data.  Priority:
+    #   1. _holdings_df from sidecar (already has yfinance prices applied)
+    #   2. perf_df itself (Symbol/Shares/Price/Value already reflect yfinance)
+    _perf_stats = None
+    if _holdings_df is not None and not _holdings_df.empty:
+        _stats_df = _holdings_df.copy()
+        if "Ticker" in _stats_df.columns and "Symbol" not in _stats_df.columns:
+            _stats_df = _stats_df.rename(columns={"Ticker": "Symbol"})
+        _raw_list = _detail_df.to_dict(orient="records") if (_detail_df is not None and not _detail_df.empty) else None
+        _perf_stats = calculate_portfolio_statistics(_stats_df, raw_holdings_list=_raw_list)
+    else:
+        # Fall back: derive stats directly from perf_df (has updated prices)
+        _stats_df = perf_df[["Symbol", "Shares", "Price", "Value"]].copy() if \
+                    all(c in perf_df.columns for c in ["Symbol", "Shares", "Price", "Value"]) else perf_df.copy()
+        _stats_df = _stats_df.rename(columns={"Symbol": "Symbol"})  # ensure name
+        # calculate_portfolio_statistics expects a "Name" column
+        if "Name" not in _stats_df.columns and "Symbol" in _stats_df.columns:
+            _stats_df["Name"] = _stats_df["Symbol"]
+        for _c in ["Value", "Shares", "Price"]:
+            if _c in _stats_df.columns:
+                _stats_df[_c] = pd.to_numeric(_stats_df[_c], errors="coerce")
+        _perf_stats = calculate_portfolio_statistics(_stats_df)
+
+    if _perf_stats and "error" in _perf_stats:
+        _perf_stats = None
+
+    excel_buf = build_performance_excel(perf_df, holdings_df=_holdings_df, detail_df=_detail_df, stats=_perf_stats)
     fname = f"portfolio_performance_{_dt3.date.today().isoformat()}.xlsx"
     st.download_button(
         label="⬇️ Download Excel Report",
@@ -1885,7 +2455,7 @@ def render_performance_report_dashboard(report_file):
     )
 
 
-def render_portfolio_analysis(df, is_realtime=False):
+def render_portfolio_analysis(df, is_realtime=False, raw_holdings_list=None):
     """Render the full portfolio analysis (table, statistics, charts) for a given holdings DataFrame."""
     btn_key_suffix = "_rt" if is_realtime else ""
 
@@ -1961,6 +2531,17 @@ def render_portfolio_analysis(df, is_realtime=False):
         import datetime as _dt2
         report_file = os.path.join(user_dir, f"perf_report_{_dt2.date.today().isoformat()}.json")
         perf_df.to_json(report_file, orient="records")
+
+        # Save holdings sidecar so the performance report page can embed the sheets
+        holdings_sidecar = os.path.join(user_dir, f"perf_report_{_dt2.date.today().isoformat()}_holdings.json")
+        _sidecar = {
+            "holdings": df.to_dict(orient="records"),
+            "raw_holdings_list": raw_holdings_list or [],
+        }
+        import json as _json
+        with open(holdings_sidecar, "w", encoding="utf-8") as _sf:
+            _json.dump(_sidecar, _sf)
+
         _prog.progress(100, text=f"Done — {len(rows)} holdings processed.")
         _prog.empty()
 
@@ -1974,7 +2555,7 @@ def render_portfolio_analysis(df, is_realtime=False):
 
     # --- LLM Portfolio Review Button ---
     st.subheader("Portfolio Review by AI")
-    stats = calculate_portfolio_statistics(df)
+    stats = calculate_portfolio_statistics(df, raw_holdings_list=raw_holdings_list)
     if st.button("Ask AI for Portfolio Insights", key=f"llm_review_btn{btn_key_suffix}"):
         with st.spinner("AI is reviewing your portfolio..."):
             llm_prompt = (
@@ -1998,7 +2579,7 @@ def render_portfolio_analysis(df, is_realtime=False):
 
     # Portfolio statistics section
     st.header("Portfolio Statistics")
-    stats = calculate_portfolio_statistics(df)
+    stats = calculate_portfolio_statistics(df, raw_holdings_list=raw_holdings_list)
 
     if 'error' in stats:
         st.error(stats['error'])
@@ -2046,6 +2627,48 @@ def render_portfolio_analysis(df, is_realtime=False):
                     ).reset_index(drop=True),
                     hide_index=True
                 )
+
+        if 'tax_allocation' in stats and not stats['tax_allocation'].empty:
+            _TAX_COLOURS = {
+                "Taxable":           "#3B82F6",
+                "Tax-Deferred":      "#F59E0B",
+                "Tax-Exempt (Roth)": "#10B981",
+            }
+            with st.expander("Tax-Status Allocation", expanded=True):
+                _ta = stats['tax_allocation']
+                _pie_cols = st.columns([1, 1])
+                with _pie_cols[0]:
+                    _fig_tax = px.pie(
+                        _ta,
+                        names="Tax Status",
+                        values="Value",
+                        color="Tax Status",
+                        color_discrete_map=_TAX_COLOURS,
+                        title="Portfolio by Tax Status",
+                        hole=0.4,
+                    )
+                    _fig_tax.update_traces(textposition="inside", textinfo="percent+label")
+                    _fig_tax.update_layout(height=320, margin=dict(t=40, l=10, r=10, b=10), showlegend=False)
+                    st.plotly_chart(_fig_tax, width="stretch")
+                with _pie_cols[1]:
+                    st.dataframe(
+                        _ta.assign(Value=_ta["Value"].map("${:,.2f}".format),
+                                   **{"% of Portfolio": _ta["% of Portfolio"].map("{:.1f}%".format)}
+                                  )[["Tax Status", "Value", "% of Portfolio"]],
+                        hide_index=True,
+                    )
+                    st.caption(
+                        "**Taxable** — brokerage / individual / joint accounts  \n"
+                        "**Tax-Deferred** — Traditional IRA, 401(k), 403(b), SEP-IRA, SIMPLE IRA, rollover IRA, etc.  \n"
+                        "**Tax-Exempt (Roth)** — Roth IRA, Roth 401(k)"
+                    )
+
+                if 'tax_allocation_by_account' in stats and not stats['tax_allocation_by_account'].empty:
+                    st.markdown("**By Account**")
+                    _ab = stats['tax_allocation_by_account'].copy()
+                    _ab["Value"] = _ab["Value"].map("${:,.2f}".format)
+                    _ab["% of Portfolio"] = _ab["% of Portfolio"].map("{:.1f}%".format)
+                    st.dataframe(_ab, hide_index=True)
 
         with col2:
             st.subheader("Top Holdings")
@@ -2291,7 +2914,25 @@ def render_realtime_holdings_dashboard(csv_path, refresh_seconds):
 
     render_portfolio_analysis(live_df, is_realtime=True)
 
-def calculate_portfolio_statistics(df):
+_TAX_DEFERRED_RE = re.compile(
+    r'\b(401k|401\(k\)|403b|403\(b\)|457|tsp|sep[\s\-]?ira|simple[\s\-]?ira|pension|profit[\s\-]?sharing|'
+    r'traditional[\s\-]?ira|rollover[\s\-]?ira|inherited[\s\-]?ira|ira)\b',
+    re.IGNORECASE,
+)
+_TAX_EXEMPT_RE = re.compile(r'\b(roth)\b', re.IGNORECASE)
+
+
+def classify_tax_status(account_name: str) -> str:
+    """Return 'Tax-Exempt (Roth)', 'Tax-Deferred', or 'Taxable' for an account name."""
+    name = str(account_name or "")
+    if _TAX_EXEMPT_RE.search(name):
+        return "Tax-Exempt (Roth)"
+    if _TAX_DEFERRED_RE.search(name):
+        return "Tax-Deferred"
+    return "Taxable"
+
+
+def calculate_portfolio_statistics(df, raw_holdings_list=None):
     """Calculate statistics for the portfolio"""
     stats = {}
 
@@ -2335,9 +2976,11 @@ def calculate_portfolio_statistics(df):
                 stats['concentration'] = "High concentration"
 
             # Map the expected column names to their actual counterparts
+            # Accept either 'Ticker' or 'Symbol' as the symbol column
+            _sym_col = 'Ticker' if 'Ticker' in df.columns else ('Symbol' if 'Symbol' in df.columns else None)
             column_mapping = {
-                'Symbol': 'Ticker' if 'Ticker' in df.columns else None,
-                'Name': 'Name'  # Name is already correctly named
+                'Symbol': _sym_col,
+                'Name': 'Name' if 'Name' in df.columns else None,
             }
 
             # Check if any mapped columns are missing
@@ -2348,8 +2991,8 @@ def calculate_portfolio_statistics(df):
 
             # Create a copy with standardized column names for easier processing
             df_mapped = df.copy()
-            if 'Ticker' in df.columns:
-                df_mapped['Symbol'] = df['Ticker']
+            if _sym_col != 'Symbol':
+                df_mapped['Symbol'] = df[_sym_col]
 
             # Calculate top holdings (top 10 instead of top 5)
             top_holdings = df_mapped.sort_values(by='Value_numeric', ascending=False).head(10)
@@ -2367,6 +3010,54 @@ def calculate_portfolio_statistics(df):
             # Use the mapped column names for the final dataframe
             cols_to_select = ['Name', 'Symbol', 'Value_numeric', 'pct_of_total']  # Swapped Name and Symbol order
             stats['holdings_pct'] = df_mapped[cols_to_select].sort_values(by='pct_of_total', ascending=False)
+
+            # ── Tax-status allocation ─────────────────────────────────────────
+            # Prefer raw_holdings_list (per-account rows) for accurate account names.
+            # Fall back to consolidated df if no raw list provided.
+            _tax_rows = []
+            if raw_holdings_list:
+                for _rh in raw_holdings_list:
+                    _acct = _rh.get("Account", "") or ""
+                    _val  = pd.to_numeric(_rh.get("Value", 0), errors="coerce") or 0.0
+                    if _val:
+                        _tax_rows.append({"Account": _acct, "Value_numeric": _val,
+                                          "Tax Status": classify_tax_status(_acct)})
+            elif "Account" in df_mapped.columns:
+                for _, _row in df_mapped.iterrows():
+                    _acct = str(_row.get("Account", "") or "")
+                    _val  = pd.to_numeric(_row.get("Value_numeric", 0), errors="coerce") or 0.0
+                    if _val:
+                        _tax_rows.append({"Account": _acct, "Value_numeric": _val,
+                                          "Tax Status": classify_tax_status(_acct)})
+
+            if _tax_rows:
+                _tax_df = pd.DataFrame(_tax_rows)
+                _tax_total = _tax_df["Value_numeric"].sum()
+                _tax_summary = (
+                    _tax_df.groupby("Tax Status")["Value_numeric"]
+                    .sum()
+                    .reset_index()
+                    .rename(columns={"Value_numeric": "Value"})
+                )
+                _tax_summary["% of Portfolio"] = _tax_summary["Value"] / _tax_total * 100
+                _order = ["Taxable", "Tax-Deferred", "Tax-Exempt (Roth)"]
+                _tax_summary["_sort"] = _tax_summary["Tax Status"].map(
+                    {v: i for i, v in enumerate(_order)}
+                ).fillna(99)
+                _tax_summary = _tax_summary.sort_values("_sort").drop(columns="_sort").reset_index(drop=True)
+                stats["tax_allocation"] = _tax_summary
+
+                # Account-level breakdown (aggregated per account)
+                _acct_tax = (
+                    _tax_df.groupby(["Account", "Tax Status"])["Value_numeric"]
+                    .sum()
+                    .reset_index()
+                    .rename(columns={"Value_numeric": "Value"})
+                    .sort_values("Value", ascending=False)
+                    .reset_index(drop=True)
+                )
+                _acct_tax["% of Portfolio"] = _acct_tax["Value"] / _tax_total * 100
+                stats["tax_allocation_by_account"] = _acct_tax
 
         except Exception as e:
             stats['error'] = f"Error calculating statistics: {str(e)}"
@@ -2606,63 +3297,83 @@ def create_text_report(stats, df, output_file_base):
 
     with open(report_path, "w", encoding="utf-8") as file:
         file.write("PORTFOLIO ANALYSIS REPORT\n")
-        file.write("=======================\n\n")
+        file.write("=" * 100 + "\n\n")
 
         # Summary statistics
         file.write("SUMMARY STATISTICS\n")
-        file.write("-----------------\n")
-        file.write(f"Total Portfolio Value: ${stats['total_value']:,.2f}\n")
-        file.write(f"Number of Holdings: {stats['count']}\n")
-        file.write(f"Average Holding Value: ${stats['avg_value']:,.2f}\n")
-        file.write(f"Median Holding Value: ${stats['median_value']:,.2f}\n")
-        file.write(f"Standard Deviation: ${stats['std_dev']:,.2f}\n")
-        file.write(f"Largest Holding: ${stats['max_value']:,.2f}\n")
-        file.write(f"Smallest Holding: ${stats['min_value']:,.2f}\n")
-        file.write(f"Value Range: ${stats['value_range']:,.2f}\n\n")
+        file.write("-" * 50 + "\n")
+        W = 30  # label width
+        file.write(f"{'Total Portfolio Value:':<{W}} ${stats['total_value']:>15,.2f}\n")
+        file.write(f"{'Number of Holdings:':<{W}} {stats['count']:>16}\n")
+        file.write(f"{'Average Holding Value:':<{W}} ${stats['avg_value']:>15,.2f}\n")
+        file.write(f"{'Median Holding Value:':<{W}} ${stats['median_value']:>15,.2f}\n")
+        file.write(f"{'Standard Deviation:':<{W}} ${stats['std_dev']:>15,.2f}\n")
+        file.write(f"{'Largest Holding:':<{W}} ${stats['max_value']:>15,.2f}\n")
+        file.write(f"{'Smallest Holding:':<{W}} ${stats['min_value']:>15,.2f}\n")
+        file.write(f"{'Value Range:':<{W}} ${stats['value_range']:>15,.2f}\n\n")
 
         # Concentration metrics
         file.write("CONCENTRATION METRICS\n")
-        file.write("--------------------\n")
-        file.write(f"Top 5 Holdings: {stats['top_5_pct']:.2f}% of portfolio\n")
-        file.write(f"Top 10 Holdings: {stats['top_10_pct']:.2f}% of portfolio\n")
-        file.write(f"HHI Concentration Score: {stats['hhi']:.2f} ({stats['concentration']})\n\n")
+        file.write("-" * 50 + "\n")
+        file.write(f"{'Top 5 Holdings:':<{W}} {stats['top_5_pct']:>14.2f}%  of portfolio\n")
+        file.write(f"{'Top 10 Holdings:':<{W}} {stats['top_10_pct']:>14.2f}%  of portfolio\n")
+        file.write(f"{'HHI Concentration Score:':<{W}} {stats['hhi']:>14.2f}  ({stats['concentration']})\n\n")
 
         # Asset allocation if available
         if 'asset_allocation' in stats:
             file.write("ASSET ALLOCATION\n")
-            file.write("----------------\n")
+            file.write("-" * 60 + "\n")
+            file.write(f"{'Category':<30} {'Weight %':>10}   {'Value':>15}\n")
+            file.write("-" * 60 + "\n")
             for idx, row in stats['asset_allocation'].iterrows():
-                file.write(f"{row['Category']}: {row['pct_of_total']:.2f}% (${row['Value_numeric']:,.2f})\n")
+                cat = str(row['Category'])[:29]
+                pct = row['pct_of_total']
+                val = row['Value_numeric']
+                file.write(f"{cat:<30} {pct:>9.2f}%   ${val:>14,.2f}\n")
             file.write("\n")
 
         # Top holdings
         file.write("TOP HOLDINGS\n")
         file.write("-----------\n")
+        file.write(f"{'Rank':<6} {'Ticker':<10} {'Name':<35} {'Value':<15} {'Weight %':<10}\n")
+        file.write("-" * 78 + "\n")
 
         top_holdings = stats['holdings_pct'].head(10)
-        for idx, row in top_holdings.iterrows():
-            file.write(f"{row['Name']} ({row['Symbol']}): {row['pct_of_total']:.2f}% (${row['Value_numeric']:,.2f})\n")
+        for rank, (idx, row) in enumerate(top_holdings.iterrows(), 1):
+            sym = str(row.get('Symbol', ''))[:9]
+            nm  = str(row.get('Name', ''))[:34]
+            val = row.get('Value_numeric', 0)
+            pct = row.get('pct_of_total', 0)
+            file.write(f"{rank:<6} {sym:<10} {nm:<35} ${val:<14,.2f} {pct:.2f}%\n")
 
-        # If there are more than 10 holdings, add an "Other" category
         if len(stats['holdings_pct']) > 10:
             others_sum = stats['holdings_pct'].iloc[10:]['pct_of_total'].sum()
             others_value = others_sum / 100 * stats['total_value']
-            file.write(f"Other Holdings: {others_sum:.2f}% (${others_value:,.2f})\n\n")
+            file.write(f"{'':6} {'(other)':<10} {'':<35} ${others_value:<14,.2f} {others_sum:.2f}%\n")
+        file.write("\n")
 
         # All holdings sorted by value
         file.write("\nALL HOLDINGS (by value)\n")
-        file.write("---------------------\n")
+        file.write("-" * 100 + "\n")
+        file.write(f"{'Ticker':<10} {'Name':<35} {'Shares':<12} {'Price':<12} {'Value':<15} {'Type':<10}\n")
+        file.write("-" * 100 + "\n")
 
         for idx, row in df.sort_values('Value_numeric', ascending=False).iterrows():
-            ticker = row.get('Ticker', row.get('Symbol', 'N/A'))
-            name = row.get('Name', 'N/A')
-            value = row.get('Value_numeric', row.get('Value', 0))
-            shares = row.get('Shares', 'N/A')
-
-            file.write(f"{name} ({ticker}): ${value:,.2f}")
-            if shares != 'N/A':
-                file.write(f", {shares} shares")
-            file.write("\n")
+            ticker = str(row.get('Ticker', row.get('Symbol', '')))[:9]
+            name   = str(row.get('Name', ''))[:34]
+            value  = row.get('Value_numeric', row.get('Value', 0))
+            try:
+                shares = float(row.get('Shares', 0) or 0)
+                shares_str = f"{shares:.2f}"
+            except (TypeError, ValueError):
+                shares_str = str(row.get('Shares', ''))
+            try:
+                price = float(row.get('Price', 0) or 0)
+                price_str = f"${price:.2f}"
+            except (TypeError, ValueError):
+                price_str = str(row.get('Price', ''))
+            htype = str(row.get('Type', row.get('Asset Type', '')))[:9]
+            file.write(f"{ticker:<10} {name:<35} {shares_str:<12} {price_str:<12} ${value:<14,.2f} {htype:<10}\n")
 
     return report_path
 
@@ -2818,18 +3529,25 @@ def main():
                     key="download_csv"
                 )
 
-        # Formatted text file download
-        if result["text_path"]:
-            with open(result["text_path"], "r", encoding="utf-8") as f:
-                text_data = f.read()
-
+        # Holdings Excel download
+        if result["csv_path"]:
+            _holdings_stats = calculate_portfolio_statistics(
+                pd.read_csv(result["csv_path"]),
+                raw_holdings_list=result.get("raw_holdings_list"),
+            )
+            excel_buf = build_holdings_excel(
+                result["csv_path"],
+                result.get("raw_holdings_list"),
+                stats=_holdings_stats if "error" not in _holdings_stats else None,
+            )
+            xlsx_name = os.path.basename(result["csv_path"]).replace(".csv", ".xlsx")
             with col2:
-                download_text = st.download_button(
-                    label="Download Formatted Text File",
-                    data=text_data,
-                    file_name=os.path.basename(result["text_path"]),
-                    mime="text/plain",
-                    key="download_text"
+                st.download_button(
+                    label="Download Excel File",
+                    data=excel_buf,
+                    file_name=xlsx_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_holdings_excel"
                 )
 
         # Text report download or raw data as fallback
@@ -3242,7 +3960,7 @@ def main():
                         unsafe_allow_html=True,
                     )
 
-                render_portfolio_analysis(df)
+                render_portfolio_analysis(df, raw_holdings_list=result.get("raw_holdings_list"))
 
     if not result or not result.get("success", False):
         # No file processed yet or processing failed, show instructions
