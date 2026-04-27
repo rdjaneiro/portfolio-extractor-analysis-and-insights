@@ -1451,6 +1451,37 @@ def build_realtime_holdings_dataframe(csv_path):
     }
 
 
+def _enrich_holdings_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Insert computed P&L, ROI%, and Account Type columns into a holdings DataFrame."""
+    df = df.copy()
+
+    # P&L and ROI% — insert right after the Value column
+    if "Value" in df.columns and "Cost Basis" in df.columns:
+        val   = pd.to_numeric(df["Value"],      errors="coerce")
+        basis = pd.to_numeric(df["Cost Basis"], errors="coerce")
+        has_basis = basis.notna() & (basis != 0)
+        df["P&L"]  = np.where(has_basis, val - basis, np.nan)
+        df["ROI%"] = np.where(has_basis, (val - basis) / basis, np.nan)
+        cols = list(df.columns)
+        for c in ["ROI%", "P&L"]:          # remove from wherever they landed
+            if c in cols:
+                cols.remove(c)
+        val_idx = cols.index("Value")
+        cols.insert(val_idx + 1, "P&L")
+        cols.insert(val_idx + 2, "ROI%")
+        df = df[cols]
+
+    # Account Type — insert right after the Account column
+    if "Account" in df.columns:
+        df["Account Type"] = df["Account"].apply(classify_tax_status)
+        cols = list(df.columns)
+        cols.remove("Account Type")
+        cols.insert(cols.index("Account") + 1, "Account Type")
+        df = df[cols]
+
+    return df
+
+
 def build_holdings_excel(csv_path, raw_holdings_list=None, stats=None):
     """Build a formatted Excel workbook from a holdings CSV and return BytesIO.
 
@@ -1477,6 +1508,8 @@ def build_holdings_excel(csv_path, raw_holdings_list=None, stats=None):
     # Sort by value descending
     if "Value" in df.columns:
         df = df.sort_values("Value", ascending=False, na_position="last").reset_index(drop=True)
+    # Add computed columns (P&L, ROI%, Account Type)
+    df = _enrich_holdings_df(df)
 
     # Build details DataFrame from raw per-account holdings
     detail_df = None
@@ -1495,6 +1528,8 @@ def build_holdings_excel(csv_path, raw_holdings_list=None, stats=None):
         detail_df = detail_df[detail_cols]
         if "Value" in detail_df.columns:
             detail_df = detail_df.sort_values(["Account", "Value"], ascending=[True, False], na_position="last").reset_index(drop=True)
+        # Add computed columns
+        detail_df = _enrich_holdings_df(detail_df)
 
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
         df.to_excel(writer, index=False, sheet_name="Holdings")
@@ -1510,28 +1545,52 @@ def build_holdings_excel(csv_path, raw_holdings_list=None, stats=None):
         text_fmt     = wb.add_format({"border": 1, "valign": "vcenter"})
         pos_fmt      = wb.add_format({"bg_color": "#0d2b1a", "font_color": "#4ade80",
                                        "num_format": "$#,##0.00", "border": 1, "valign": "vcenter"})
+        neg_fmt      = wb.add_format({"bg_color": "#2b0d0d", "font_color": "#f87171",
+                                       "num_format": "$#,##0.00", "border": 1, "valign": "vcenter"})
+        roi_pos_fmt  = wb.add_format({"bg_color": "#0d2b1a", "font_color": "#4ade80",
+                                       "num_format": "0.00%", "border": 1, "valign": "vcenter"})
+        roi_neg_fmt  = wb.add_format({"bg_color": "#2b0d0d", "font_color": "#f87171",
+                                       "num_format": "0.00%", "border": 1, "valign": "vcenter"})
+        roi_neu_fmt  = wb.add_format({"num_format": "0.00%", "border": 1, "valign": "vcenter"})
         acct_fmt     = wb.add_format({"bold": True, "bg_color": "#1A1A2E", "font_color": "#C5CAE8",
                                        "border": 1, "valign": "vcenter"})
 
         col_widths = {"Ticker": 10, "Symbol": 10, "Name": 35, "Shares": 12,
-                      "Price": 13, "Value": 15, "Type": 14, "Account": 24,
+                      "Price": 13, "Value": 15, "P&L": 14, "ROI%": 10,
+                      "Type": 14, "Account": 24, "Account Type": 20,
                       "Category": 20, "CUSIP": 14, "Cost Basis": 14, "Exchange": 12}
 
-        currency_cols = {"Value", "Price", "Cost Basis"}
+        currency_cols = {"Price", "Cost Basis"}
         number_cols   = {"Shares"}
 
-        def _write_sheet(ws, frame):
-            COLS = list(frame.columns)
+        def _write_sheet(ws, frame, with_acct_highlight=False):
+            COLS   = list(frame.columns)
+            pnl_ci = COLS.index("P&L") if "P&L" in COLS else None
             for ci, col in enumerate(COLS):
                 ws.write(0, ci, col, hdr_fmt)
             for ri, row_vals in enumerate(frame.itertuples(index=False), start=1):
+                # Determine sign from P&L for coloring Value, P&L, and ROI%
+                _sign = 0
+                if pnl_ci is not None:
+                    _pnl = row_vals[pnl_ci]
+                    try:
+                        if not (isinstance(_pnl, float) and np.isnan(_pnl)) and _pnl is not None:
+                            _sign = 1 if float(_pnl) > 0 else (-1 if float(_pnl) < 0 else 0)
+                    except (TypeError, ValueError):
+                        pass
+                _money_fmt = pos_fmt if _sign > 0 else (neg_fmt if _sign < 0 else currency_fmt)
+                _roi_fmt   = roi_pos_fmt if _sign > 0 else (roi_neg_fmt if _sign < 0 else roi_neu_fmt)
                 for ci, col in enumerate(COLS):
                     val = row_vals[ci]
                     is_none = val is None or (isinstance(val, float) and np.isnan(val))
                     if is_none:
                         ws.write(ri, ci, "", text_fmt)
+                    elif col in ("Value", "P&L"):
+                        ws.write_number(ri, ci, float(val), _money_fmt)
+                    elif col == "ROI%":
+                        ws.write_number(ri, ci, float(val), _roi_fmt)
                     elif col in currency_cols:
-                        ws.write_number(ri, ci, float(val), pos_fmt if col == "Value" else currency_fmt)
+                        ws.write_number(ri, ci, float(val), currency_fmt)
                     elif col in number_cols:
                         ws.write_number(ri, ci, float(val), num_fmt)
                     else:
@@ -1548,8 +1607,9 @@ def build_holdings_excel(csv_path, raw_holdings_list=None, stats=None):
         if detail_df is not None and not detail_df.empty:
             detail_df.to_excel(writer, index=False, sheet_name="Holdings Details")
             dws = writer.sheets["Holdings Details"]
-            DCOLS = list(detail_df.columns)
+            DCOLS  = list(detail_df.columns)
             acct_ci = DCOLS.index("Account") if "Account" in DCOLS else None
+            pnl_dci = DCOLS.index("P&L")     if "P&L"     in DCOLS else None
 
             for ci, col in enumerate(DCOLS):
                 dws.write(0, ci, col, hdr_fmt)
@@ -1557,15 +1617,29 @@ def build_holdings_excel(csv_path, raw_holdings_list=None, stats=None):
             prev_acct = None
             for ri, row_vals in enumerate(detail_df.itertuples(index=False), start=1):
                 cur_acct = row_vals[acct_ci] if acct_ci is not None else None
+                # Determine sign from P&L
+                _sign = 0
+                if pnl_dci is not None:
+                    _pnl = row_vals[pnl_dci]
+                    try:
+                        if not (isinstance(_pnl, float) and np.isnan(_pnl)) and _pnl is not None:
+                            _sign = 1 if float(_pnl) > 0 else (-1 if float(_pnl) < 0 else 0)
+                    except (TypeError, ValueError):
+                        pass
+                _money_fmt = pos_fmt if _sign > 0 else (neg_fmt if _sign < 0 else currency_fmt)
+                _roi_fmt   = roi_pos_fmt if _sign > 0 else (roi_neg_fmt if _sign < 0 else roi_neu_fmt)
                 for ci, col in enumerate(DCOLS):
                     val = row_vals[ci]
                     is_none = val is None or (isinstance(val, float) and np.isnan(val))
-                    # Use accent format for Account column when it changes
                     use_acct_fmt = (col == "Account" and cur_acct != prev_acct)
                     if is_none:
                         dws.write(ri, ci, "", acct_fmt if use_acct_fmt else text_fmt)
+                    elif col in ("Value", "P&L"):
+                        dws.write_number(ri, ci, float(val), _money_fmt)
+                    elif col == "ROI%":
+                        dws.write_number(ri, ci, float(val), _roi_fmt)
                     elif col in currency_cols:
-                        dws.write_number(ri, ci, float(val), pos_fmt if col == "Value" else currency_fmt)
+                        dws.write_number(ri, ci, float(val), currency_fmt)
                     elif col in number_cols:
                         dws.write_number(ri, ci, float(val), num_fmt)
                     else:
@@ -1934,10 +2008,14 @@ def build_performance_excel(perf_df, holdings_df=None, detail_df=None, stats=Non
 
         # ── Holdings sheet (consolidated) ─────────────────────────────────────
         if holdings_df is not None and not holdings_df.empty:
+            holdings_df = _enrich_holdings_df(holdings_df)
+            if detail_df is not None and not detail_df.empty:
+                detail_df = _enrich_holdings_df(detail_df)
             _h_col_widths = {"Ticker": 10, "Symbol": 10, "Name": 35, "Shares": 12,
-                             "Price": 13, "Value": 15, "Type": 14, "Account": 24,
+                             "Price": 13, "Value": 15, "P&L": 14, "ROI%": 10,
+                             "Type": 14, "Account": 24, "Account Type": 20,
                              "Category": 20, "CUSIP": 14, "Cost Basis": 14, "Exchange": 12}
-            _h_currency_cols = {"Value", "Price", "Cost Basis"}
+            _h_currency_cols = {"Price", "Cost Basis"}
             _h_number_cols   = {"Shares"}
 
             _h_hdr_fmt = wb.add_format({
@@ -1949,25 +2027,48 @@ def build_performance_excel(perf_df, holdings_df=None, detail_df=None, stats=Non
             _h_text_fmt     = wb.add_format({"border": 1, "valign": "vcenter"})
             _h_pos_fmt      = wb.add_format({"bg_color": "#0d2b1a", "font_color": "#4ade80",
                                              "num_format": "$#,##0.00", "border": 1, "valign": "vcenter"})
+            _h_neg_fmt      = wb.add_format({"bg_color": "#2b0d0d", "font_color": "#f87171",
+                                             "num_format": "$#,##0.00", "border": 1, "valign": "vcenter"})
+            _h_roi_pos_fmt  = wb.add_format({"bg_color": "#0d2b1a", "font_color": "#4ade80",
+                                             "num_format": "0.00%", "border": 1, "valign": "vcenter"})
+            _h_roi_neg_fmt  = wb.add_format({"bg_color": "#2b0d0d", "font_color": "#f87171",
+                                             "num_format": "0.00%", "border": 1, "valign": "vcenter"})
+            _h_roi_neu_fmt  = wb.add_format({"num_format": "0.00%", "border": 1, "valign": "vcenter"})
             _h_acct_fmt     = wb.add_format({"bold": True, "bg_color": "#1A1A2E", "font_color": "#C5CAE8",
                                              "border": 1, "valign": "vcenter"})
 
             def _write_holdings_sheet(ws_obj, frame, with_acct_highlight=False):
-                HCOLS = list(frame.columns)
+                HCOLS   = list(frame.columns)
                 acct_ci = HCOLS.index("Account") if "Account" in HCOLS else None
+                pnl_ci  = HCOLS.index("P&L")     if "P&L"     in HCOLS else None
                 for ci, col in enumerate(HCOLS):
                     ws_obj.write(0, ci, col, _h_hdr_fmt)
                 prev_acct = None
                 for ri, row_vals in enumerate(frame.itertuples(index=False), start=1):
                     cur_acct = row_vals[acct_ci] if acct_ci is not None else None
+                    # Determine sign from P&L
+                    _sign = 0
+                    if pnl_ci is not None:
+                        _pnl = row_vals[pnl_ci]
+                        try:
+                            if not (isinstance(_pnl, float) and np.isnan(_pnl)) and _pnl is not None:
+                                _sign = 1 if float(_pnl) > 0 else (-1 if float(_pnl) < 0 else 0)
+                        except (TypeError, ValueError):
+                            pass
+                    _money_fmt = _h_pos_fmt if _sign > 0 else (_h_neg_fmt if _sign < 0 else _h_currency_fmt)
+                    _roi_fmt   = _h_roi_pos_fmt if _sign > 0 else (_h_roi_neg_fmt if _sign < 0 else _h_roi_neu_fmt)
                     for ci, col in enumerate(HCOLS):
                         val = row_vals[ci]
                         is_none = val is None or (isinstance(val, float) and np.isnan(val))
                         use_acct = with_acct_highlight and col == "Account" and cur_acct != prev_acct
                         if is_none:
                             ws_obj.write(ri, ci, "", _h_acct_fmt if use_acct else _h_text_fmt)
+                        elif col in ("Value", "P&L"):
+                            ws_obj.write_number(ri, ci, float(val), _money_fmt)
+                        elif col == "ROI%":
+                            ws_obj.write_number(ri, ci, float(val), _roi_fmt)
                         elif col in _h_currency_cols:
-                            ws_obj.write_number(ri, ci, float(val), _h_pos_fmt if col == "Value" else _h_currency_fmt)
+                            ws_obj.write_number(ri, ci, float(val), _h_currency_fmt)
                         elif col in _h_number_cols:
                             ws_obj.write_number(ri, ci, float(val), _h_num_fmt)
                         else:
