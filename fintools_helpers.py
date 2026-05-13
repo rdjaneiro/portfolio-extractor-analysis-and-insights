@@ -906,6 +906,7 @@ def save_networth_timeline_to_csv(networth_data, csv_path):
     """Save net worth timeline data to CSV file"""
     try:
         df = pd.DataFrame(networth_data)
+        df = df.drop(columns=[c for c in ['Account', 'Type', 'Category'] if c in df.columns])
         df.to_csv(csv_path, index=False)
         return True
     except Exception as e:
@@ -2304,14 +2305,12 @@ def render_portfolio_analysis(df, is_realtime=False, raw_holdings_list=None):
             with metrics_col1:
                 st.metric(label="Total Value", value=f"${stats['total_value']:,.2f}")
                 st.metric(label="Holdings Count", value=stats['count'])
-                st.metric(label="Average Value", value=f"${stats['avg_value']:,.2f}")
-                st.metric(label="Median Value", value=f"${stats['median_value']:,.2f}")
+                st.metric(label="Cash %", value=f"{stats.get('cash_pct', 0.0):.1f}%", help="Percentage of portfolio held as cash")
 
             with metrics_col2:
                 st.metric(label="Largest Holding", value=f"${stats['max_value']:,.2f}")
-                st.metric(label="Smallest Holding", value=f"${stats['min_value']:,.2f}")
-                st.metric(label="Value Range", value=f"${stats['value_range']:,.2f}")
-                st.metric(label="Standard Deviation", value=f"${stats['std_dev']:,.2f}")
+                st.metric(label="Total Cash", value=f"${stats.get('total_cash', 0.0):,.2f}")
+                st.metric(label="Top Holding %", value=f"{stats.get('top_holding_pct', 0.0):.1f}%", help="Percentage of portfolio in the single largest holding")
 
             st.subheader("Portfolio Concentration")
             metrics_col3, metrics_col4 = st.columns(2)
@@ -2696,10 +2695,17 @@ def calculate_portfolio_statistics(df, raw_holdings_list=None):
                 category_stats = df_mapped.groupby('Category')['Value_numeric'].sum().reset_index()
                 category_stats['pct_of_total'] = category_stats['Value_numeric'] / stats['total_value'] * 100
                 stats['asset_allocation'] = category_stats.sort_values('pct_of_total', ascending=False)
+                _cash_mask = df_mapped['Category'].str.strip().str.lower() == 'cash'
+                stats['total_cash'] = df_mapped.loc[_cash_mask, 'Value_numeric'].sum()
+            elif 'Type' in df_mapped.columns:
+                _cash_mask = df_mapped['Type'].str.strip().str.lower() == 'cash'
+                stats['total_cash'] = df_mapped.loc[_cash_mask, 'Value_numeric'].sum()
 
             # Use the mapped column names for the final dataframe
             cols_to_select = ['Name', 'Symbol', 'Value_numeric', 'pct_of_total']  # Swapped Name and Symbol order
             stats['holdings_pct'] = df_mapped[cols_to_select].sort_values(by='pct_of_total', ascending=False)
+            stats['top_holding_pct'] = stats['holdings_pct'].iloc[0]['pct_of_total'] if not stats['holdings_pct'].empty else 0.0
+            stats['cash_pct'] = stats.get('total_cash', 0.0) / stats['total_value'] * 100 if stats['total_value'] > 0 else 0.0
 
             # ── Tax-status allocation ─────────────────────────────────────────
             # Prefer raw_holdings_list (per-account rows) for accurate account names.
