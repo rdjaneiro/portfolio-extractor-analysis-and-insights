@@ -56,6 +56,7 @@ from llm_helpers import send_query_to_llm
 
 # Add JSON import for processing JSON files
 import json
+import csv
 import re
 
 def process_networth_json(file_path):
@@ -347,20 +348,51 @@ def process_transactions_json(file_path):
                 category_name = 'Advisory Fee'
                 category_type = 'EXPENSE'
 
+            # Skip pending transactions — amounts are provisional and not yet settled
+            if (t.get('status', '') or '').strip().lower() == 'pending':
+                continue
+
             structured.append({
                 'Date': t.get('transactionDate', ''),
-                'Description': t.get('description', t.get('originalDescription', '')),
-                'Simple Description': t.get('simpleDescription', ''),
-                'Amount': t.get('amount', 0.0),
-                'Is Credit': t.get('isCredit', False),
-                'Category': category_name,
-                'Category Type': category_type,
                 'Account': t.get('accountName', ''),
+                'Description': t.get('description', t.get('originalDescription', '')),
+                'Category': category_name,
+                'Tags': '',
+                'Amount': t.get('amount', 0.0) * (1 if t.get('isCredit', False) else -1),
+                'Simple Description': t.get('simpleDescription', ''),
+                'Is Credit': t.get('isCredit', False),
+                'Category Type': category_type,
+                'Category Id': cat_id,
+                'Category Name (Raw)': t.get('categoryName', ''),
+                'Category Type (Raw)': t.get('categoryType', ''),
                 'Transaction Type': t.get('transactionType', ''),
                 'Status': t.get('status', ''),
                 'Is Income': t.get('isIncome', False),
                 'Is Spending': t.get('isSpending', False),
                 'Currency': t.get('currency', 'USD'),
+                # Investment-specific fields (Phase 1)
+                'Investment Type': t.get('investmentType', ''),
+                'Symbol': t.get('symbol', ''),
+                'Quantity': t.get('quantity', 0),
+                'Price': t.get('price', 0),
+                # Force CUSIP to str — values like "46090E103" (QQQ) contain 'E'
+                # and will be misread as scientific notation by Excel/CSV parsers
+                # if left unquoted.  Must coerce before the DataFrame is built.
+                'CUSIP': str(t.get('cusipNumber') or ''),
+                # Additional fields preserved from source JSON
+                'Is Cash In': t.get('isCashIn', False),
+                'Is Cash Out': t.get('isCashOut', False),
+                'Is Cost': t.get('isCost', False),
+                'Is Duplicate': t.get('isDuplicate', False),
+                'Is Modified By Rule': t.get('isModifiedByRule', False),
+                'Is Interest': t.get('isInterest', False),
+                'Original Description': t.get('originalDescription', ''),
+                'Merchant': t.get('merchant', ''),
+                'Merchant Type': t.get('merchantType', ''),
+                'Intermediary': t.get('intermediary', ''),
+                'Sub Type': t.get('subType', ''),
+                'Holding Type': t.get('holdingType', ''),
+                'User Transaction Id': t.get('userTransactionId', ''),
             })
 
         return {
@@ -442,6 +474,106 @@ def save_accounts_json_to_csv(accounts_data, csv_path):
             'Currency':     acct.get('currency', 'USD'),
         })
     pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+
+def save_transactions_json_to_csv(transactions_data, csv_path):
+    """Save transactions data as full CSV export."""
+    if isinstance(transactions_data, dict):
+        transactions = transactions_data.get('transactions', [])
+    else:
+        transactions = transactions_data or []
+
+    if transactions:
+        df = pd.DataFrame(transactions)
+        # Bug 1: CUSIP values like "46090E103" must be quoted strings so Excel/CSV
+        # parsers don't reinterpret them as scientific notation.
+        if 'CUSIP' in df.columns:
+            df['CUSIP'] = df['CUSIP'].astype(str)
+        # Bug 2/3: QUOTE_NONNUMERIC writes empty strings as "" instead of a bare
+        # empty field, preserving the distinction between empty-string and null
+        # for any downstream tool that reads the CSV.
+        df.to_csv(csv_path, index=False, quoting=csv.QUOTE_NONNUMERIC)
+
+
+def export_transactions_cash_flow_csv(transactions_data, csv_path):
+    """Export only cash transactions (EXPENSE, INCOME) for budget analysis.
+    Excludes investment trades and transfers between accounts."""
+    if isinstance(transactions_data, dict):
+        transactions = transactions_data.get('transactions', [])
+    else:
+        transactions = transactions_data or []
+
+    rows = []
+    for t in transactions:
+        # Only include cash transactions, exclude transfers and investment trades
+        if t.get('Category Type') not in ['TRANSFER', 'DEFERRED_COMPENSATION']:
+            rows.append({
+                'Date': t['Date'],
+                'Account': t['Account'],
+                'Description': t['Description'],
+                'Amount': t['Amount'],
+                'Category': t['Category'],
+                'Category Type': t['Category Type'],
+                'Transaction Type': t['Transaction Type'],
+                'Is Income': t['Is Income'],
+                'Is Spending': t['Is Spending'],
+            })
+
+    if rows:
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+
+def export_transactions_investment_csv(transactions_data, csv_path):
+    """Export only investment transactions (Buy, Sell, Fund Exchange, Shares transfers) for portfolio reconciliation.
+    Excludes Dividend and Interest which are in cash flow."""
+    if isinstance(transactions_data, dict):
+        transactions = transactions_data.get('transactions', [])
+    else:
+        transactions = transactions_data or []
+
+    rows = []
+    for t in transactions:
+        # Only portfolio-moving transactions (excluding Dividend and Interest which are cash flow items)
+        if t.get('Investment Type') in ['Buy', 'Sell', 'Fund Exchange', 'Shares In', 'Shares Out', 'Transfer']:
+            rows.append({
+                'Date': t['Date'],
+                'Account': t['Account'],
+                'Security': t['Description'],
+                'Symbol': t['Symbol'],
+                'Investment Type': t['Investment Type'],
+                'Quantity': t['Quantity'],
+                'Price': t['Price'],
+                'Amount': t['Amount'],
+                'Is Credit': t['Is Credit'],
+                'Category': t['Category'],
+            })
+
+    if rows:
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+
+def export_transactions_transfers_csv(transactions_data, csv_path):
+    """Export only transfer transactions for account reconciliation."""
+    if isinstance(transactions_data, dict):
+        transactions = transactions_data.get('transactions', [])
+    else:
+        transactions = transactions_data or []
+
+    rows = []
+    for t in transactions:
+        # Only transfer-type transactions (excluding investment trades marked as transfers)
+        if t.get('Category Type') == 'TRANSFER' and t.get('Investment Type') not in ['Buy', 'Sell']:
+            rows.append({
+                'Date': t['Date'],
+                'Account': t['Account'],
+                'Description': t['Description'],
+                'Amount': t['Amount'],
+                'Is Credit': t['Is Credit'],
+                'Type': t['Transaction Type'],
+            })
+
+    if rows:
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
 
 
 def format_accounts_json_as_text(accounts_data):
@@ -2167,7 +2299,6 @@ def render_portfolio_analysis(df, is_realtime=False, raw_holdings_list=None):
     """Render the full portfolio analysis (table, statistics, charts) for a given holdings DataFrame."""
     btn_key_suffix = "_rt" if is_realtime else ""
 
-    st.header("Portfolio Holdings")
     REALTIME_ONLY_COLS = ["Change", "1 Day %", "1 day $"]
     currency_cols = {
         col: st.column_config.NumberColumn(col, format="$%,.2f")

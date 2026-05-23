@@ -368,70 +368,72 @@ def main():
         # Resolve content type early so download section can use it
         content_type = result.get("content_type", "portfolio")
 
-        # --- DOWNLOAD OPTIONS SECTION (moved to top) ---
-        st.header("Download Options")
-        col1, col2, col3 = st.columns(3)
+        # --- DOWNLOAD OPTIONS SECTION (not shown for transactions or net_worth — they handle downloads inline) ---
+        if content_type not in ("transactions", "net_worth"):
+            if content_type not in ("accounts",):
+                st.header("Portfolio Holdings")
+            col1, col2, col3 = st.columns(3)
 
-        # Provide CSV download
-        if result["csv_path"]:
-            csv_df = pd.read_csv(result["csv_path"])
-            csv_data = csv_df.to_csv(index=False)
+            # Provide CSV download
+            if result["csv_path"]:
+                csv_df = pd.read_csv(result["csv_path"])
+                csv_data = csv_df.to_csv(index=False)
 
-            with col1:
-                download_csv = st.download_button(
-                    label="Download CSV File",
-                    data=csv_data,
-                    file_name=os.path.basename(result["csv_path"]),
-                    mime="text/csv",
-                    key="download_csv"
+                with col1:
+                    download_csv = st.download_button(
+                        label="Download CSV File",
+                        data=csv_data,
+                        file_name=os.path.basename(result["csv_path"]),
+                        mime="text/csv",
+                        key="download_csv"
+                    )
+
+            # Holdings Excel download (portfolio only — not applicable for accounts/networth/transactions)
+            if result["csv_path"] and content_type not in ("accounts", "net_worth"):
+                _holdings_stats = calculate_portfolio_statistics(
+                    pd.read_csv(result["csv_path"]),
+                    raw_holdings_list=result.get("raw_holdings_list"),
                 )
-
-        # Holdings Excel download (portfolio only — not applicable for accounts/networth/transactions)
-        if result["csv_path"] and content_type not in ("accounts", "net_worth", "transactions"):
-            _holdings_stats = calculate_portfolio_statistics(
-                pd.read_csv(result["csv_path"]),
-                raw_holdings_list=result.get("raw_holdings_list"),
-            )
-            excel_buf = build_holdings_excel(
-                result["csv_path"],
-                result.get("raw_holdings_list"),
-                stats=_holdings_stats if "error" not in _holdings_stats else None,
-            )
-            xlsx_name = os.path.basename(result["csv_path"]).replace(".csv", ".xlsx")
-            with col2:
-                st.download_button(
-                    label="Download Excel File",
-                    data=excel_buf,
-                    file_name=xlsx_name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="download_holdings_excel"
+                excel_buf = build_holdings_excel(
+                    result["csv_path"],
+                    result.get("raw_holdings_list"),
+                    stats=_holdings_stats if "error" not in _holdings_stats else None,
                 )
+                xlsx_name = os.path.basename(result["csv_path"]).replace(".csv", ".xlsx")
+                with col2:
+                    st.download_button(
+                        label="Download Excel File",
+                        data=excel_buf,
+                        file_name=xlsx_name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_holdings_excel"
+                    )
 
-        # Text report download or raw data as fallback
-        if result["report_path"]:
-            with open(result["report_path"], "r", encoding="utf-8") as f:
-                report_data = f.read()
+            # Text report download or raw data as fallback
+            if result["report_path"]:
+                with open(result["report_path"], "r", encoding="utf-8") as f:
+                    report_data = f.read()
 
-            with col3:
-                download_report = st.download_button(
-                    label="Download Text Report",
-                    data=report_data,
-                    file_name=os.path.basename(result["report_path"]),
-                    mime="text/plain",
-                    key="download_report"
-                )
-        elif result["raw_data_path"]:
-            with open(result["raw_data_path"], "r", encoding="utf-8") as f:
-                raw_data = f.read()
+                with col3:
+                    download_report = st.download_button(
+                        label="Download Text Report",
+                        data=report_data,
+                        file_name=os.path.basename(result["report_path"]),
+                        mime="text/plain",
+                        key="download_report"
+                    )
+            elif result["raw_data_path"]:
+                with open(result["raw_data_path"], "r", encoding="utf-8") as f:
+                    raw_data = f.read()
 
-            with col3:
-                download_raw = st.download_button(
-                    label="Download Raw Data File",
-                    data=raw_data,
-                    file_name=os.path.basename(result["raw_data_path"]),
-                    mime="text/plain",
-                    key="download_raw"
-                )
+                with col3:
+                    download_raw = st.download_button(
+                        label="Download Raw Data File",
+                        data=raw_data,
+                        file_name=os.path.basename(result["raw_data_path"]),
+                        mime="text/plain",
+                        key="download_raw"
+                    )
 
         # Display data based on content type
         if content_type == "net_worth":
@@ -439,118 +441,18 @@ def main():
             if result["holdings"] and df is not None:
                 st.header("Net Worth Summary")
 
-                # Check if this is JSON net worth data (timeline data)
-                if result.get("file_type") == "json" and 'Date' in df.columns:
-                    # Add account type filter tabs similar to Empower
-                    account_tabs = st.tabs(["All", "Cash", "Investment", "Credit", "Loan", "Mortgage", "Other"])
+                # CSV download inline (replaces the top-level Download Options section for net worth)
+                if result["csv_path"]:
+                    _nw_csv_df = pd.read_csv(result["csv_path"])
+                    st.download_button(
+                        label="Download CSV File",
+                        data=_nw_csv_df.to_csv(index=False),
+                        file_name=os.path.basename(result["csv_path"]),
+                        mime="text/csv",
+                        key="download_networth_csv"
+                    )
 
-                    with account_tabs[0]:  # All
-                        # Create and display the timeline visualization
-                        timeline_chart = create_networth_timeline_chart(df)
-                        if timeline_chart:
-                            st.plotly_chart(timeline_chart, width='stretch')
-
-                    with account_tabs[1]:  # Cash
-                        if 'Total Cash' in df.columns:
-                            df_cash = df.copy()
-                            df_cash['Balance'] = df_cash['Total Cash']
-                            chart_cash = create_networth_timeline_chart(df_cash)
-                            if chart_cash:
-                                chart_cash.update_layout(title=dict(text='<b>Cash Accounts</b>'))
-                                st.plotly_chart(chart_cash, width='stretch')
-
-                    with account_tabs[2]:  # Investment
-                        if 'Total Investment' in df.columns:
-                            df_inv = df.copy()
-                            df_inv['Balance'] = df_inv['Total Investment']
-                            chart_inv = create_networth_timeline_chart(df_inv)
-                            if chart_inv:
-                                chart_inv.update_layout(title=dict(text='<b>Investment Accounts</b>'))
-                                st.plotly_chart(chart_inv, width='stretch')
-
-                    with account_tabs[3]:  # Credit
-                        if 'Total Credit' in df.columns:
-                            df_credit = df.copy()
-                            df_credit['Balance'] = df_credit['Total Credit'] * -1  # Show as positive for display
-                            chart_credit = create_networth_timeline_chart(df_credit)
-                            if chart_credit:
-                                chart_credit.update_layout(title=dict(text='<b>Credit Accounts</b>'))
-                                st.plotly_chart(chart_credit, width='stretch')
-
-                    with account_tabs[4]:  # Loan
-                        if 'Total Loan' in df.columns:
-                            df_loan = df.copy()
-                            df_loan['Balance'] = df_loan['Total Loan'] * -1  # Show as positive for display
-                            chart_loan = create_networth_timeline_chart(df_loan)
-                            if chart_loan:
-                                chart_loan.update_layout(title=dict(text='<b>Loan Accounts</b>'))
-                                st.plotly_chart(chart_loan, width='stretch')
-
-                    with account_tabs[5]:  # Mortgage
-                        if 'Total Mortgage' in df.columns:
-                            df_mortgage = df.copy()
-                            df_mortgage['Balance'] = df_mortgage['Total Mortgage'] * -1  # Show as positive for display
-                            chart_mortgage = create_networth_timeline_chart(df_mortgage)
-                            if chart_mortgage:
-                                chart_mortgage.update_layout(title=dict(text='<b>Mortgage Accounts</b>'))
-                                st.plotly_chart(chart_mortgage, width='stretch')
-
-                    with account_tabs[6]:  # Other
-                        if 'Total Other Assets' in df.columns:
-                            df_other = df.copy()
-                            df_other['Balance'] = df_other['Total Other Assets']
-                            chart_other = create_networth_timeline_chart(df_other)
-                            if chart_other:
-                                chart_other.update_layout(title=dict(text='<b>Other Assets</b>'))
-                                st.plotly_chart(chart_other, width='stretch')
-
-                    # Create and display the category breakdown over time
-                    category_chart = create_networth_category_timeline_chart(df)
-                    if category_chart:
-                        st.plotly_chart(category_chart, width='stretch')
-
-                    # Add a tab view for different time ranges
-                    st.subheader("Timeline Data")
-                    time_range_tabs = st.tabs(["All Time", "Last 90 Days", "Last 30 Days", "Last 7 Days"])
-
-                    with time_range_tabs[0]:
-                        # For JSON files, show ALL dates but only remove basic account-level columns
-                        columns_to_remove = ['Account', 'Type', 'Category']
-                        display_df = df.drop(columns=[col for col in columns_to_remove if col in df.columns])
-                        # Sort by date (most recent first) for better presentation
-                        display_df = display_df.sort_values('Date', ascending=False)
-                        st.dataframe(display_df, hide_index=True)
-
-                    with time_range_tabs[1]:
-                        # Last 90 days
-                        df_sorted = df.sort_values('Date', ascending=False)
-                        df_90 = df_sorted.head(90)
-                        columns_to_remove = ['Account', 'Type', 'Category']
-                        display_df_90 = df_90.drop(columns=[col for col in columns_to_remove if col in df_90.columns])
-                        st.dataframe(display_df_90, hide_index=True)
-
-                    with time_range_tabs[2]:
-                        # Last 30 days
-                        df_sorted = df.sort_values('Date', ascending=False)
-                        df_30 = df_sorted.head(30)
-                        columns_to_remove = ['Account', 'Type', 'Category']
-                        display_df_30 = df_30.drop(columns=[col for col in columns_to_remove if col in df_30.columns])
-                        st.dataframe(display_df_30, hide_index=True)
-
-                    with time_range_tabs[3]:
-                        # Last 7 days
-                        df_sorted = df.sort_values('Date', ascending=False)
-                        df_7 = df_sorted.head(7)
-                        columns_to_remove = ['Account', 'Type', 'Category']
-                        display_df_7 = df_7.drop(columns=[col for col in columns_to_remove if col in df_7.columns])
-                        st.dataframe(display_df_7, hide_index=True)
-                else:
-                    # Display only individual accounts (exclude TOTAL NET WORTH row) for non-JSON files
-                    accounts_df = df[df['Account'] != 'TOTAL NET WORTH'].copy()
-                    st.dataframe(accounts_df, hide_index=True)
-
-                # Calculate net worth statistics
-                # For JSON files, pass the file type so we can handle timeline data appropriately
+                # Calculate net worth statistics up front so the overview appears immediately below
                 stats = calculate_networth_statistics(df, file_type=result.get("file_type"))
 
                 if 'error' in stats:
@@ -562,7 +464,7 @@ def main():
                         with st.expander("Error details"):
                             st.code(stats['traceback'])
                 else:
-                    # Create metrics for net worth overview
+                    # Net Worth Overview immediately below the summary header
                     st.header("Net Worth Overview")
 
                     # For JSON files, show comprehensive breakdown with all total fields
@@ -687,6 +589,133 @@ def main():
                             with st.container():
                                 st.metric(label="Number of Accounts", value=stats['total_accounts'])
 
+                # Check if this is JSON net worth data (timeline data)
+                if result.get("file_type") == "json" and 'Date' in df.columns:
+                    # Add account type filter tabs similar to Empower
+                    account_tabs = st.tabs(["All", "Cash", "Investment", "Credit", "Loan", "Mortgage", "Other"])
+
+                    with account_tabs[0]:  # All
+                        # Create and display the timeline visualization
+                        timeline_chart = create_networth_timeline_chart(df)
+                        if timeline_chart:
+                            st.plotly_chart(timeline_chart, width='stretch')
+
+                    with account_tabs[1]:  # Cash
+                        if 'Total Cash' in df.columns:
+                            df_cash = df.copy()
+                            df_cash['Balance'] = df_cash['Total Cash']
+                            chart_cash = create_networth_timeline_chart(df_cash)
+                            if chart_cash:
+                                chart_cash.update_layout(title=dict(text='<b>Cash Accounts</b>'))
+                                st.plotly_chart(chart_cash, width='stretch')
+
+                    with account_tabs[2]:  # Investment
+                        if 'Total Investment' in df.columns:
+                            df_inv = df.copy()
+                            df_inv['Balance'] = df_inv['Total Investment']
+                            chart_inv = create_networth_timeline_chart(df_inv)
+                            if chart_inv:
+                                chart_inv.update_layout(title=dict(text='<b>Investment Accounts</b>'))
+                                st.plotly_chart(chart_inv, width='stretch')
+
+                    with account_tabs[3]:  # Credit
+                        if 'Total Credit' in df.columns:
+                            df_credit = df.copy()
+                            df_credit['Balance'] = df_credit['Total Credit'] * -1  # Show as positive for display
+                            chart_credit = create_networth_timeline_chart(df_credit)
+                            if chart_credit:
+                                chart_credit.update_layout(title=dict(text='<b>Credit Accounts</b>'))
+                                st.plotly_chart(chart_credit, width='stretch')
+
+                    with account_tabs[4]:  # Loan
+                        if 'Total Loan' in df.columns:
+                            df_loan = df.copy()
+                            df_loan['Balance'] = df_loan['Total Loan'] * -1  # Show as positive for display
+                            chart_loan = create_networth_timeline_chart(df_loan)
+                            if chart_loan:
+                                chart_loan.update_layout(title=dict(text='<b>Loan Accounts</b>'))
+                                st.plotly_chart(chart_loan, width='stretch')
+
+                    with account_tabs[5]:  # Mortgage
+                        if 'Total Mortgage' in df.columns:
+                            df_mortgage = df.copy()
+                            df_mortgage['Balance'] = df_mortgage['Total Mortgage'] * -1  # Show as positive for display
+                            chart_mortgage = create_networth_timeline_chart(df_mortgage)
+                            if chart_mortgage:
+                                chart_mortgage.update_layout(title=dict(text='<b>Mortgage Accounts</b>'))
+                                st.plotly_chart(chart_mortgage, width='stretch')
+
+                    with account_tabs[6]:  # Other
+                        if 'Total Other Assets' in df.columns:
+                            df_other = df.copy()
+                            df_other['Balance'] = df_other['Total Other Assets']
+                            chart_other = create_networth_timeline_chart(df_other)
+                            if chart_other:
+                                chart_other.update_layout(title=dict(text='<b>Other Assets</b>'))
+                                st.plotly_chart(chart_other, width='stretch')
+
+                    # Create and display the category breakdown over time
+                    category_chart = create_networth_category_timeline_chart(df)
+                    if category_chart:
+                        st.plotly_chart(category_chart, width='stretch')
+
+                    # Add a tab view for different time ranges
+                    st.subheader("Timeline Data")
+
+                    # Build CSV for download (all dates, all category columns, sorted newest first)
+                    _cols_to_drop = ['Account', 'Type', 'Category']
+                    _download_df = df.drop(columns=[c for c in _cols_to_drop if c in df.columns])
+                    _download_df = _download_df.sort_values('Date', ascending=False)
+                    _csv_bytes = _download_df.to_csv(index=False).encode('utf-8')
+                    # Derive a filename from the uploaded file name
+                    _upload_name = os.path.splitext(os.path.basename(result.get("raw_data_path") or "networth_history"))[0]
+                    st.download_button(
+                        label="Download History CSV",
+                        data=_csv_bytes,
+                        file_name=f"{_upload_name}_history.csv",
+                        mime="text/csv",
+                        key="download_networth_history_csv"
+                    )
+
+                    time_range_tabs = st.tabs(["All Time", "Last 90 Days", "Last 30 Days", "Last 7 Days"])
+
+                    with time_range_tabs[0]:
+                        # For JSON files, show ALL dates but only remove basic account-level columns
+                        columns_to_remove = ['Account', 'Type', 'Category']
+                        display_df = df.drop(columns=[col for col in columns_to_remove if col in df.columns])
+                        # Sort by date (most recent first) for better presentation
+                        display_df = display_df.sort_values('Date', ascending=False)
+                        st.dataframe(display_df, hide_index=True)
+
+                    with time_range_tabs[1]:
+                        # Last 90 days
+                        df_sorted = df.sort_values('Date', ascending=False)
+                        df_90 = df_sorted.head(90)
+                        columns_to_remove = ['Account', 'Type', 'Category']
+                        display_df_90 = df_90.drop(columns=[col for col in columns_to_remove if col in df_90.columns])
+                        st.dataframe(display_df_90, hide_index=True)
+
+                    with time_range_tabs[2]:
+                        # Last 30 days
+                        df_sorted = df.sort_values('Date', ascending=False)
+                        df_30 = df_sorted.head(30)
+                        columns_to_remove = ['Account', 'Type', 'Category']
+                        display_df_30 = df_30.drop(columns=[col for col in columns_to_remove if col in df_30.columns])
+                        st.dataframe(display_df_30, hide_index=True)
+
+                    with time_range_tabs[3]:
+                        # Last 7 days
+                        df_sorted = df.sort_values('Date', ascending=False)
+                        df_7 = df_sorted.head(7)
+                        columns_to_remove = ['Account', 'Type', 'Category']
+                        display_df_7 = df_7.drop(columns=[col for col in columns_to_remove if col in df_7.columns])
+                        st.dataframe(display_df_7, hide_index=True)
+                else:
+                    # Display only individual accounts (exclude TOTAL NET WORTH row) for non-JSON files
+                    accounts_df = df[df['Account'] != 'TOTAL NET WORTH'].copy()
+                    st.dataframe(accounts_df, hide_index=True)
+
+                if 'error' not in stats:
                     # Category breakdown
                     if 'category_breakdown' in stats and stats['category_breakdown'] is not None and not stats['category_breakdown'].empty:
                         st.header("Breakdown by Category")
@@ -1182,7 +1211,7 @@ def main():
             txn_data = result.get("holdings", {})
             transactions = txn_data.get("transactions", []) if isinstance(txn_data, dict) else []
 
-            st.header("Transactions")
+            st.header("💰 Transactions")
 
             # Summary metrics
             c1, c2, c3, c4, c5 = st.columns(5)
@@ -1209,67 +1238,169 @@ def main():
                 txn_df = txn_df.sort_values('Date', ascending=False)
                 txn_df['Date'] = txn_df['Date'].dt.strftime('%Y-%m-%d')
 
-                # Category spending chart
-                expense_df = txn_df[txn_df['Category Type'] == 'EXPENSE'].copy()
-                if not expense_df.empty:
-                    import plotly.express as _px
-                    # Credits (refunds) reduce the category total; debits increase it
-                    expense_df['Signed Amount'] = expense_df.apply(
-                        lambda r: -r['Amount'] if r['Is Credit'] else r['Amount'], axis=1
+                # === EXPORT OPTIONS ===
+                st.subheader("📥 Export Options")
+                ex_col1, ex_col2, ex_col3, ex_col4 = st.columns(4)
+
+                with ex_col1:
+                    # Full transactions export
+                    import csv as _csv_mod
+                    from fintools_helpers import save_transactions_json_to_csv
+                    _txn_df = pd.DataFrame(transactions)
+                    if 'CUSIP' in _txn_df.columns:
+                        _txn_df['CUSIP'] = _txn_df['CUSIP'].astype(str)
+                    # Ensure priority columns appear first
+                    _priority_cols = ['Date', 'Account', 'Description', 'Category', 'Tags', 'Amount']
+                    _rest_cols = [c for c in _txn_df.columns if c not in _priority_cols]
+                    _txn_df = _txn_df[[c for c in _priority_cols if c in _txn_df.columns] + _rest_cols]
+                    csv_buf = _txn_df.to_csv(index=False, quoting=_csv_mod.QUOTE_NONNUMERIC)
+                    st.download_button(
+                        label="📋 All Transactions",
+                        data=csv_buf.encode("utf-8"),
+                        file_name=os.path.basename(result.get("csv_path", "transactions.csv")),
+                        mime="text/csv",
+                        key="download_txn_all_csv",
                     )
-                    cat_totals = expense_df.groupby('Category')['Signed Amount'].sum().reset_index()
+
+                with ex_col2:
+                    # Cash flow export
+                    from fintools_helpers import export_transactions_cash_flow_csv
+                    cash_df = txn_df[txn_df['Category Type'].isin(['EXPENSE', 'INCOME'])].copy()
+                    if not cash_df.empty:
+                        _cash_cols = ['Date', 'Account', 'Description', 'Category', 'Tags', 'Amount',
+                                      'Is Credit', 'Category Type', 'Transaction Type', 'Is Income', 'Is Spending']
+                        cash_df_export = cash_df[[c for c in _cash_cols if c in cash_df.columns]].copy()
+                        cash_buf = cash_df_export.to_csv(index=False)
+                        st.download_button(
+                            label="💵 Cash Flow",
+                            data=cash_buf.encode("utf-8"),
+                            file_name=os.path.basename(result.get("csv_path", "transactions.csv")).replace(".csv", "_cash_flow.csv"),
+                            mime="text/csv",
+                            key="download_txn_cash_csv",
+                        )
+
+                with ex_col3:
+                    # Investment export (portfolio trades only, excluding dividends/interest which are in cash flow)
+                    invest_df = txn_df[(txn_df['Investment Type'].notna()) &
+                                       (txn_df['Investment Type'] != '') &
+                                       (txn_df['Investment Type'].isin(['Buy', 'Sell', 'Fund Exchange', 'Shares In', 'Shares Out']))].copy()
+                    if not invest_df.empty:
+                        invest_df_export = invest_df[[
+                            'Date', 'Account', 'Description', 'Symbol', 'Investment Type',
+                            'Quantity', 'Price', 'Amount', 'Is Credit', 'Category'
+                        ]].copy()
+                        invest_buf = invest_df_export.to_csv(index=False)
+                        st.download_button(
+                            label="📈 Investments",
+                            data=invest_buf.encode("utf-8"),
+                            file_name=os.path.basename(result.get("csv_path", "transactions.csv")).replace(".csv", "_investments.csv"),
+                            mime="text/csv",
+                            key="download_txn_invest_csv",
+                        )
+
+                with ex_col4:
+                    # Transfers export
+                    transfer_df = txn_df[(txn_df['Category Type'] == 'TRANSFER') &
+                                        (txn_df['Investment Type'].isna() | (txn_df['Investment Type'] == ''))].copy()
+                    if not transfer_df.empty:
+                        transfer_df_export = transfer_df[[
+                            'Date', 'Account', 'Description', 'Amount', 'Is Credit',
+                            'Transaction Type', 'Category Type'
+                        ]].copy()
+                        transfer_buf = transfer_df_export.to_csv(index=False)
+                        st.download_button(
+                            label="🔄 Transfers",
+                            data=transfer_buf.encode("utf-8"),
+                            file_name=os.path.basename(result.get("csv_path", "transactions.csv")).replace(".csv", "_transfers.csv"),
+                            mime="text/csv",
+                            key="download_txn_transfer_csv",
+                        )
+
+                st.divider()
+
+                # === CASH TRANSACTIONS ===
+                st.subheader("💰 Cash Transactions (Spending & Income)")
+                cash_df = txn_df[txn_df['Category Type'].isin(['EXPENSE', 'INCOME'])].copy()
+                cash_count = len(cash_df)
+                st.caption(f"{cash_count} transactions")
+
+                if not cash_df.empty:
+                    # Cash flow chart (expenses vs income)
+                    import plotly.express as _px
+                    cf_df = cash_df.copy()
+                    cf_df['Signed Amount'] = cf_df['Amount']
+                    cat_totals = cf_df.groupby('Category')['Signed Amount'].sum().reset_index()
                     cat_totals = cat_totals.rename(columns={'Signed Amount': 'Amount'})
-                    cat_totals = cat_totals[cat_totals['Amount'] > 0]
-                    cat_totals = cat_totals.sort_values('Amount', ascending=False).head(15)
-                    fig_cat = _px.bar(cat_totals, x='Amount', y='Category', orientation='h',
-                                      title='Top Spending Categories',
-                                      color_discrete_sequence=['#EF553B'])
-                    fig_cat.update_layout(showlegend=False, margin=dict(l=0, r=0, t=40, b=0))
-                    st.plotly_chart(fig_cat, width="stretch")
+                    cat_totals = cat_totals.sort_values('Amount', key=lambda s: s.abs(), ascending=False).head(15)
 
-                # Filter controls
-                categories = ['All'] + sorted(txn_df['Category'].dropna().unique().tolist())
-                accounts = ['All'] + sorted(txn_df['Account'].dropna().unique().tolist())
-                fc1, fc2 = st.columns(2)
-                with fc1:
-                    sel_cat = st.selectbox("Filter by Category", categories, key="txn_cat_filter")
-                with fc2:
-                    sel_acct = st.selectbox("Filter by Account", accounts, key="txn_acct_filter")
+                    if not cat_totals.empty:
+                        colors = ['#00CC96' if x >= 0 else '#EF553B' for x in cat_totals['Amount']]
+                        fig_cat = _px.bar(cat_totals, x='Amount', y='Category', orientation='h',
+                                         title='Top Cash Flow Categories (Income in Green, Expenses in Red)',
+                                         color_discrete_sequence=colors)
+                        fig_cat.update_layout(showlegend=False, margin=dict(l=0, r=0, t=40, b=0))
+                        st.plotly_chart(fig_cat, width='stretch')
 
-                filtered_df = txn_df.copy()
-                if sel_cat != 'All':
-                    filtered_df = filtered_df[filtered_df['Category'] == sel_cat]
-                if sel_acct != 'All':
-                    filtered_df = filtered_df[filtered_df['Account'] == sel_acct]
+                    # Cash transactions table
+                    cash_cols = ['Date', 'Account', 'Description', 'Amount', 'Category', 'Transaction Type', 'Is Income']
+                    display_cash = cash_df[cash_cols].copy()
+                    display_cash['Amount'] = display_cash.apply(
+                        lambda r: f"+${r['Amount']:,.2f}" if r['Is Income'] else f"-${abs(r['Amount']):,.2f}",
+                        axis=1
+                    )
+                    display_cash = display_cash.drop('Is Income', axis=1)
+                    st.dataframe(display_cash, hide_index=True, width='stretch')
 
-                st.dataframe(filtered_df, hide_index=True)
+                st.divider()
 
-                # Build Empower-format CSV (Date, Account, Description, Category, Tags, Amount + extras)
-                # Amount is signed: positive = credit, negative = debit
-                emp_fmt = pd.DataFrame({
-                    'Date': txn_df['Date'],
-                    'Account': txn_df['Account'],
-                    'Description': txn_df['Description'],
-                    'Category': txn_df['Category'],
-                    'Tags': '',
-                    'Amount': txn_df.apply(
-                        lambda r: r['Amount'] if r['Is Credit'] else -r['Amount'], axis=1
-                    ),
-                    'Category Type': txn_df['Category Type'],
-                    'Transaction Type': txn_df['Transaction Type'],
-                    'Is Income': txn_df['Is Income'],
-                    'Is Spending': txn_df['Is Spending'],
-                })
-                _emp_csv_name = os.path.basename(
-                    result.get("csv_path", "transactions.csv")
-                ).replace(".csv", "_empower_format.csv")
-                st.download_button(
-                    label="Download Empower Format CSV",
-                    data=emp_fmt.to_csv(index=False).encode("utf-8"),
-                    file_name=_emp_csv_name,
-                    mime="text/csv",
-                    key="download_txn_empower_csv",
-                )
+                # === INVESTMENT ACTIVITY ===
+                st.subheader("📈 Investment Activity (Portfolio Trades)")
+                invest_df = txn_df[(txn_df['Investment Type'].notna()) &
+                                   (txn_df['Investment Type'] != '') &
+                                   (txn_df['Investment Type'].isin(['Buy', 'Sell', 'Fund Exchange', 'Shares In', 'Shares Out']))].copy()
+                invest_count = len(invest_df)
+                st.caption(f"{invest_count} portfolio transactions")
+
+                if not invest_df.empty:
+                    # Investment summary
+                    inv_col1, inv_col2, inv_col3, inv_col4 = st.columns(4)
+                    with inv_col1:
+                        buy_count = len(invest_df[invest_df['Investment Type'] == 'Buy'])
+                        st.metric("Buys", buy_count)
+                    with inv_col2:
+                        sell_count = len(invest_df[invest_df['Investment Type'] == 'Sell'])
+                        st.metric("Sells", sell_count)
+                    with inv_col3:
+                        exchange_count = len(invest_df[invest_df['Investment Type'] == 'Fund Exchange'])
+                        st.metric("Exchanges", exchange_count)
+                    with inv_col4:
+                        transfer_count = len(invest_df[invest_df['Investment Type'].isin(['Shares In', 'Shares Out'])])
+                        st.metric("Share Transfers", transfer_count)
+
+                    # Investment transactions table
+                    invest_cols = ['Date', 'Account', 'Investment Type', 'Symbol', 'Description', 'Quantity', 'Price', 'Amount']
+                    display_invest = invest_df[invest_cols].copy()
+                    display_invest['Amount'] = display_invest['Amount'].apply(lambda x: f"${x:,.2f}" if x >= 0 else f"-${abs(x):,.2f}")
+                    display_invest['Quantity'] = display_invest['Quantity'].apply(lambda x: f"{x:.2f}" if x != 0 else "—")
+                    display_invest['Price'] = display_invest['Price'].apply(lambda x: f"${x:.2f}" if x != 0 else "—")
+                    st.dataframe(display_invest, hide_index=True, width='stretch')
+
+                st.divider()
+
+                # === TRANSFERS ===
+                st.subheader("🔄 Transfers (Between Accounts)")
+                transfer_df = txn_df[(txn_df['Category Type'] == 'TRANSFER') &
+                                    (txn_df['Investment Type'].isna() | (txn_df['Investment Type'] == ''))].copy()
+                transfer_count = len(transfer_df)
+                st.caption(f"{transfer_count} transfer transactions")
+
+                if not transfer_df.empty:
+                    transfer_cols = ['Date', 'Account', 'Description', 'Amount', 'Is Credit', 'Transaction Type']
+                    display_transfer = transfer_df[transfer_cols].copy()
+                    display_transfer['Amount'] = display_transfer['Amount'].apply(lambda x: f"${x:,.2f}" if x >= 0 else f"-${abs(x):,.2f}")
+                    display_transfer['Direction'] = display_transfer['Is Credit'].apply(lambda x: "← In" if x else "→ Out")
+                    display_transfer = display_transfer.drop('Is Credit', axis=1)
+                    st.dataframe(display_transfer, hide_index=True, width='stretch')
 
         if content_type not in ("accounts", "net_worth", "transactions") and result["holdings"] and df is not None:
             if result.get("csv_path") and os.path.exists(result["csv_path"]):
