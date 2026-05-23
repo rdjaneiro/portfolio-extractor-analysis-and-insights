@@ -1325,20 +1325,44 @@ def main():
                 st.caption(f"{cash_count} transactions")
 
                 if not cash_df.empty:
-                    # Cash flow chart (expenses vs income)
                     import plotly.express as _px
-                    cf_df = cash_df.copy()
-                    cf_df['Signed Amount'] = cf_df['Amount']
-                    cat_totals = cf_df.groupby('Category')['Signed Amount'].sum().reset_index()
-                    cat_totals = cat_totals.rename(columns={'Signed Amount': 'Amount'})
-                    cat_totals = cat_totals.sort_values('Amount', key=lambda s: s.abs(), ascending=False).head(15)
+                    _chart_view = st.radio(
+                        "View", ["Expense", "Income", "Cash Flow"],
+                        index=0, horizontal=True, label_visibility="collapsed",
+                        key="cash_chart_view"
+                    )
 
-                    if not cat_totals.empty:
-                        colors = ['#00CC96' if x >= 0 else '#EF553B' for x in cat_totals['Amount']]
-                        fig_cat = _px.bar(cat_totals, x='Amount', y='Category', orientation='h',
-                                         title='Top Cash Flow Categories (Income in Green, Expenses in Red)',
-                                         color_discrete_sequence=colors)
-                        fig_cat.update_layout(showlegend=False, margin=dict(l=0, r=0, t=40, b=0))
+                    cf_df = cash_df.copy()
+                    if _chart_view == "Expense":
+                        _chart_df = cf_df[cf_df['Category Type'] == 'EXPENSE'].copy()
+                        _cat_totals = _chart_df.groupby('Category')['Amount'].sum().reset_index()
+                        # expenses are negative — sort ascending (most negative first)
+                        _cat_totals = _cat_totals.sort_values('Amount', ascending=True).head(15)
+                        _colors = ['#EF553B'] * len(_cat_totals)
+                        _title = 'Top Expense Categories'
+                        _total = _cat_totals['Amount'].sum()
+                        st.caption(f"Total expenses shown: **${abs(_total):,.2f}**")
+                    elif _chart_view == "Income":
+                        _chart_df = cf_df[cf_df['Category Type'] == 'INCOME'].copy()
+                        _cat_totals = _chart_df.groupby('Category')['Amount'].sum().reset_index()
+                        _cat_totals = _cat_totals.sort_values('Amount', ascending=False).head(15)
+                        _colors = ['#00CC96'] * len(_cat_totals)
+                        _title = 'Top Income Categories'
+                        _total = _cat_totals['Amount'].sum()
+                        st.caption(f"Total income shown: **${_total:,.2f}**")
+                    else:  # Cash Flow
+                        _cat_totals = cf_df.groupby('Category')['Amount'].sum().reset_index()
+                        _cat_totals = _cat_totals.sort_values('Amount', key=lambda s: s.abs(), ascending=False).head(15)
+                        _colors = ['#00CC96' if x >= 0 else '#EF553B' for x in _cat_totals['Amount']]
+                        _title = 'Top Cash Flow Categories (Income in Green, Expenses in Red)'
+                        _net = cf_df['Amount'].sum()
+                        st.caption(f"Net cash flow: **${_net:,.2f}**")
+
+                    if not _cat_totals.empty:
+                        fig_cat = _px.bar(_cat_totals, x='Category', y='Amount', orientation='v',
+                                         title=_title, color_discrete_sequence=_colors)
+                        fig_cat.update_layout(showlegend=False, margin=dict(l=0, r=0, t=40, b=0),
+                                              xaxis_tickangle=-35)
                         st.plotly_chart(fig_cat, width='stretch')
 
                     # Cash transactions table
